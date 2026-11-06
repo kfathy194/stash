@@ -232,7 +232,7 @@ def authenticated_api():
     token = token_result.stdout.strip()
     if token_result.returncode or not token:
         raise RuntimeError('GitHub CLI authentication is unavailable; pending releases were retained')
-    return release_pipeline.GitHub(local_release.RELEASE_REPOSITORY, token)
+    return release_pipeline.private_stash_repository(token)
 
 
 def queue_status(pending_root=None):

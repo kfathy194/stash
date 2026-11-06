@@ -12,6 +12,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+PRIVATE_REPOSITORY_ID = 1432010029
+PRIVATE_REPOSITORY_NODE_ID = 'R_kgDOVVq9LQ'
+LEGACY_LEDGER_REPOSITORY = 'kfathy194/stash'
+
 
 def merged_revision(event):
     pr = event.get('pull_request', {})
@@ -44,6 +48,7 @@ class GitHub:
             raise ValueError('Invalid repository')
         self.base = 'https://api.github.com/repos/' + repository
         self.token = token
+        self.ledger_repository = repository
 
     def request(self, method, path, data=None, raw=False):
         url = self.base + path
@@ -158,6 +163,25 @@ class GitHub:
                             {'tag_name':release['tag_name'],
                              'target_commitish':release['target_commitish'],
                              'draft':False, 'prerelease':True, 'make_latest':'false'})
+
+
+def private_stash_repository(token):
+    """Resolve the private development repository without following a reused name."""
+    probe = GitHub('kfathy194/stash-app', token)
+    probe.base = f'https://api.github.com/repositories/{PRIVATE_REPOSITORY_ID}'
+    record = probe.request('GET', '')
+    if (not isinstance(record, dict)
+            or record.get('id') != PRIVATE_REPOSITORY_ID
+            or record.get('node_id') != PRIVATE_REPOSITORY_NODE_ID
+            or record.get('private') is not True
+            or not isinstance(record.get('owner'), dict)
+            or record['owner'].get('login') != 'kfathy194'
+            or record.get('full_name') not in ('kfathy194/stash', 'kfathy194/stash-app')):
+        raise ValueError('Cannot verify the private release repository identity')
+    api = GitHub(record['full_name'], token)
+    # Existing append-only records keep their original ownership key after rename.
+    api.ledger_repository = LEGACY_LEDGER_REPOSITORY
+    return api
 
 
 def validate_plan(plan, source, commit_count):

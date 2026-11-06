@@ -102,4 +102,6 @@ The gallery uses generated records rendered with the production views. [Regenera
 
 ## License
 
-Stash is licensed under the [MIT License](LICENSE).
+Stash is licensed under the [MIT License](LICENSE). You may use, modify, and
+redistribute it, including commercially, while retaining the copyright and
+license notice.

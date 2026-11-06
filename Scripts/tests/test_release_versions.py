@@ -16,6 +16,7 @@ import release_pipeline as pipeline
 
 class GitService:
     def __init__(self):
+        self.repository = 'owner/repo'
         self.refs = {}
         self.objects = {}
         self.lock = threading.RLock()
@@ -25,7 +26,7 @@ class GitService:
 
     def response(self, request, **kwargs):
         with self.lock:
-            path = urllib.parse.urlsplit(request.full_url).path.split('/repos/owner/repo')[1]
+            path = urllib.parse.urlsplit(request.full_url).path.split('/repos/' + self.repository)[1]
             method = request.get_method()
             body = json.loads(request.data) if request.data else None
             def error(status):
@@ -101,6 +102,19 @@ class AllocationTests(unittest.TestCase):
         self.assertEqual(first, {'version': '0.1.1', 'build_number': 49, 'commit': 'a'*40, 'tag': 'v0.1.1-dev.49'})
         self.assertEqual((second['version'], second['build_number']), ('0.1.2', 54))
         self.assertEqual((third['version'], third['build_number']), ('0.1.3', 62))
+        self.assertEqual(self.reserve('a', 47), first)
+
+    def test_repository_rename_preserves_existing_version_assignments(self):
+        self.bootstrap()
+        first = self.reserve('a', 47)
+        original_refs = dict(self.service.refs)
+        self.service.repository = 'owner/renamed'
+        self.api = pipeline.GitHub('owner/renamed', 'test-token')
+        self.api.ledger_repository = 'owner/repo'
+        self.assertEqual(self.reserve('a', 47), first)
+        self.assertEqual(self.service.refs, original_refs)
+        second = self.reserve('b', 52)
+        self.assertEqual(second['version'], '0.1.2')
         self.assertEqual(self.reserve('a', 47), first)
 
     def test_public_reserve_command_writes_validated_plan(self):

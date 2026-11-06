@@ -29,7 +29,7 @@ def _ref(api, name):
 
 
 def _empty(api):
-    return dict(schema=1, migration=MIGRATION, repository=api.base.rsplit('/repos/', 1)[1],
+    return dict(schema=1, migration=MIGRATION, repository=api.ledger_repository,
                 baseline=BASELINE, next_patch=1, assignments={})
 
 

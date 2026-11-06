@@ -34,7 +34,6 @@ import package_release
 
 
 ZERO_SHA = '0' * 40
-RELEASE_REPOSITORY = 'kfathy194/stash'
 BUILDER_USER = 'stashbuild'
 BUILDER_TEMP_ROOT = Path('/private/tmp')
 QUEUE_ROOT = Path.home() / 'Library' / 'Caches' / 'Stash' / 'DevelopmentReleases'
@@ -238,15 +237,15 @@ def pushed_merge_commits(records, repo):
 
 def reserve_plan(repo, commit):
     count = int(git(repo, 'rev-list', '--count', commit))
-    repository = subprocess.check_output(
-        ['gh', 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
+    repository_id = subprocess.check_output(
+        ['gh', 'repo', 'view', '--json', 'id', '--jq', '.id'],
         cwd=repo, text=True).strip()
-    if repository.lower() != RELEASE_REPOSITORY:
-        raise ValueError(f'Refusing release allocation for unexpected repository: {repository}')
+    if repository_id != release_pipeline.PRIVATE_REPOSITORY_NODE_ID:
+        raise ValueError('Refusing release allocation for unexpected repository identity')
     token = subprocess.check_output(['gh', 'auth', 'token'], cwd=repo, text=True).strip()
     event = {'action': 'closed', 'pull_request': {
         'merged': True, 'base': {'ref': 'main'}, 'merge_commit_sha': commit}}
-    plan = release_versions.reserve(release_pipeline.GitHub(repository, token), event, count)
+    plan = release_versions.reserve(release_pipeline.private_stash_repository(token), event, count)
     return release_pipeline.validate_plan(plan, commit, count)
 
 
