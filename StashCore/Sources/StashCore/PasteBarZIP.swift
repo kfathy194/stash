@@ -30,7 +30,7 @@ struct PasteBarZIP {
             let nameLength = try integer(p + 28, 2), extraLength = try integer(p + 30, 2), commentLength = try integer(p + 32, 2)
             let offset = try integer(p + 42, 4)
             guard flags & 1 == 0, method == 0 || method == 8, try integer(p + 34, 2) == 0,
-                  size <= 256 * 1024 * 1024, packed <= 512 * 1024 * 1024,
+                  size <= pasteBarImportContentLimit, packed <= 512 * 1024 * 1024,
                   p + 46 + nameLength + extraLength + commentLength <= end,
                   let rawName = String(data: data.subdata(in: p + 46..<p + 46 + nameLength), encoding: .utf8) else { throw PasteBarImportError.invalidBackup }
             let name = rawName.replacingOccurrences(of: "\\", with: "/")

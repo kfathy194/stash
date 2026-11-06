@@ -15,6 +15,8 @@ public enum PasteBarImportError: LocalizedError {
     }
 }
 
+let pasteBarImportContentLimit = 500 * 1024 * 1024
+
 public struct PasteBarImportSummary: Sendable {
     public internal(set) var importedHistory = 0
     public internal(set) var importedSavedClips = 0
@@ -97,7 +99,7 @@ struct PasteBarImporter: Sendable {
                 let members = try Self.unique(group, key: "item_id")
                 let boardID = Self.identity("pinboard", groupKey)
                 let boardNameBytes = (collection["title"] ?? "Collection").utf8.count + (tab["tab_name"] ?? "Tab").utf8.count + 3
-                guard boardNameBytes <= 1024 * 1024, payloadBytes + boardNameBytes <= 256 * 1024 * 1024 else { throw PasteBarImportError.archiveLimit }
+                guard boardNameBytes <= 1024 * 1024, payloadBytes + boardNameBytes <= pasteBarImportContentLimit else { throw PasteBarImportError.archiveLimit }
                 var board = Pinboard(name: (collection["title"] ?? "Collection") + " / " + (tab["tab_name"] ?? "Tab"))
                 board.id = boardID
                 board.order = Double(pinboards.count)
@@ -124,7 +126,7 @@ struct PasteBarImporter: Sendable {
                         item.pinboardID = boardID; item.isInHistory = false
                         let title = path + [row["name"] ?? "Clip"]
                         let titleBytes = title.reduce(0) { $0 + $1.utf8.count } + max(0, title.count - 1) * 3
-                        guard titleBytes <= 1024 * 1024, payloadBytes + titleBytes <= 256 * 1024 * 1024 else { throw PasteBarImportError.archiveLimit }
+                        guard titleBytes <= 1024 * 1024, payloadBytes + titleBytes <= pasteBarImportContentLimit else { throw PasteBarImportError.archiveLimit }
                         item.title = title.joined(separator: " / ")
                         item.order = Double(items.count - before)
                         item.modifiedAt = row.date("updated_at") ?? createdAt
@@ -134,7 +136,7 @@ struct PasteBarImporter: Sendable {
                 }
                 if items.count > before {
                     payloadBytes += boardNameBytes
-                    guard payloadBytes <= 256 * 1024 * 1024 else { throw PasteBarImportError.archiveLimit }
+                    guard payloadBytes <= pasteBarImportContentLimit else { throw PasteBarImportError.archiveLimit }
                     pinboards.append(board)
                 }
             }
@@ -190,7 +192,7 @@ struct PasteBarImporter: Sendable {
                     if let cached = imageCache[key] { bytes = cached }
                     else if let loaded = try zip.contents(key) {
                         cachedBytes += loaded.count
-                        guard cachedBytes <= 256 * 1024 * 1024 else { throw PasteBarImportError.archiveLimit }
+                        guard cachedBytes <= pasteBarImportContentLimit else { throw PasteBarImportError.archiveLimit }
                         imageCache[key] = loaded; bytes = loaded
                     }
                 }
@@ -226,7 +228,7 @@ struct PasteBarImporter: Sendable {
                         item.fileName ?? "", item.fileTypeIdentifier ?? "", item.linkTitle ?? "", item.linkDomain ?? "", item.ocrText]
         payloadBytes += metadata.reduce(0) { $0 + $1.utf8.count } + item.fileURLs.reduce(0) { $0 + $1.utf8.count }
             + item.fileBookmarks.reduce(0) { $0 + $1.count } + (item.richData?.count ?? 0) + (item.data?.count ?? 0) + (item.thumbnail?.count ?? 0)
-        guard payloadBytes <= 256 * 1024 * 1024 else { throw PasteBarImportError.archiveLimit }
+        guard payloadBytes <= pasteBarImportContentLimit else { throw PasteBarImportError.archiveLimit }
         items.append(item)
     }
     private static func key(_ parts: [String]) -> String { parts.map { "\($0.utf8.count):\($0)" }.joined() }
@@ -260,7 +262,7 @@ struct PasteBarImporter: Sendable {
             for position in columns.indices {
                 let column = Int32(position), size = Int(sqlite3_column_bytes(statement, column))
                 bytes += size
-                guard bytes <= 256 * 1024 * 1024 else { throw PasteBarImportError.archiveLimit }
+                guard bytes <= pasteBarImportContentLimit else { throw PasteBarImportError.archiveLimit }
                 if sqlite3_column_type(statement, column) == SQLITE_BLOB, let pointer = sqlite3_column_blob(statement, column) { row.blobs[columns[position]] = Data(bytes: pointer, count: size) }
                 else if sqlite3_column_type(statement, column) != SQLITE_NULL {
                     guard let pointer = sqlite3_column_text(statement, column), let value = String(data: Data(bytes: pointer, count: Int(sqlite3_column_bytes(statement, column))), encoding: .utf8) else { throw PasteBarImportError.invalidBackup }

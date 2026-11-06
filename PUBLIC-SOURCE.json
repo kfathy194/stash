@@ -74,8 +74,8 @@
     "StashCore/Sources/StashCore/MCPAccess.swift": "f016c74952375bb4f45646a6a5ca09b35aa7910b26c428e830b42b076aaf2380",
     "StashCore/Sources/StashCore/MCPInitialization.swift": "38eed833ebb4cdd1595a49d03abfa52955f6308adaed0c63de61bfa808613839",
     "StashCore/Sources/StashCore/Models.swift": "d823371301e03ad4d8c7446341e00f017e04f9d01baf617f05fbe0a2c7344f71",
-    "StashCore/Sources/StashCore/PasteBarImporter.swift": "fc85422fed76a2f1e3814fe6a63d004ecd58456b3f93bd7389dc4c28436af34e",
-    "StashCore/Sources/StashCore/PasteBarZIP.swift": "cfe8658eeb5c1b2f6101898ceaf7a8c6535694a5b06f404c866ffe2cef7d1641",
+    "StashCore/Sources/StashCore/PasteBarImporter.swift": "ff0c4ab075bb98391e731e5deebe0d6d665a04cb0a560f08aa2af56a1f19103b",
+    "StashCore/Sources/StashCore/PasteBarZIP.swift": "bb607b347a4edea180d9d005e22f27c8255aad9df9e18b8a2ac4a85bfcff60d4",
     "StashCore/Sources/StashCore/PlatformRules.swift": "1ec5fd993d90d7fa2e094bbe7e6bf292ae1aa2262f83f8017e2d272e23e861f4",
     "StashCore/Sources/StashCore/ProviderImport.swift": "c35261801f5cafb2ef2657ba1c713a117eb5c3e49e16390a1fba4317d9faee58",
     "StashCore/Sources/StashCore/Rules.swift": "22624d30d41020d39800a9161401203a653f202b66a635205b4e40e6d8521a91",
@@ -86,7 +86,7 @@
     "StashCore/Tests/StashCoreTests/CoreTests.swift": "de813455266d2f5ec86ac83fae01ce7702501bb5b4aa6d232425fb7cf436a1bf",
     "StashCore/Tests/StashCoreTests/MCPInitializationTests.swift": "34c4a24d70ed67dffc2be4fe319b16486768770a2b81b09a21c651bfebe38b2a",
     "StashCore/Tests/StashCoreTests/ManagedCleanupTests.swift": "9341e0e87b6a1a271f79ae2fc847760050fd14c751e610aea97bbf94c076cf86",
-    "StashCore/Tests/StashCoreTests/PasteBarMigrationTests.swift": "ab3b05ad0b96e6752585583a01ec06697d7c1428b4534373be96e4a473de5f3d",
+    "StashCore/Tests/StashCoreTests/PasteBarMigrationTests.swift": "a820daf544cf6bc4c1b755bce3d706e7425416cb2075fc005d65afbbab898f34",
     "StashCore/Tests/StashCoreTests/ResourceLifetimeTests.swift": "ed45d6a3e25a070f1e72190c61a50cedcca6589f5cca7eb1f0f70c115eaba692",
     "StashCore/Tests/StashCoreTests/ReviewRegressionTests.swift": "e6a4bd3f2bba9d2d10d6202ebbbd88ba6ae13f887c8b5851bdafab4358acb2d7",
     "StashCore/Tests/StashCoreTests/StoreTests.swift": "0e50e60654243ab508114317d23c86abd5a787e158269ce14402a18c783ec9f3",
@@ -160,6 +160,6 @@
   },
   "note": "Reviewed source export; original Git history and operational records are excluded.",
   "schema": 1,
-  "source_commit": "4a949e5e4c8f6121915b4a73fcdf3f06b0f23f14",
-  "source_tree": "a5fe4f92458ef49f08669d2c42dc6c4bbe6344aa"
+  "source_commit": "0651b1cb46afe053139ac60059a369a3af89152c",
+  "source_tree": "763440036bc25e860a5898d958ef805d9c9e4b79"
 }

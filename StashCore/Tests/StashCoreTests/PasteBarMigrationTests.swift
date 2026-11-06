@@ -437,7 +437,7 @@ final class PasteBarMigrationTests: XCTestCase {
     @MainActor func testRepeatedLargeImageReferencesRespectTotalPayloadBudget() async throws {
         var png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=")!
         png.append(Data(count: 16 * 1024 * 1024))
-        let rows = (0..<17).map { "('image-\($0)',1,'{{base_folder}}/clipboard-images/a.png')" }.joined(separator: ",")
+        let rows = (0..<32).map { "('image-\($0)',1,'{{base_folder}}/clipboard-images/a.png')" }.joined(separator: ",")
         let backup = try PasteBarFixture(sql: "INSERT INTO clipboard_history(history_id,is_image,image_path_full_res) VALUES " + rows + ";", images: ["clipboard-images/a.png": png])
         defer { backup.remove() }
         let store = try LibraryStore(inMemory: true)
@@ -474,8 +474,36 @@ final class PasteBarMigrationTests: XCTestCase {
         XCTAssertNil(try store.materialized(XCTUnwrap(store.items.first)).data)
     }
 
+    @MainActor func testMigrationAccepts360MiBOfSourceData() async throws {
+        let backup = try PasteBarFixture(sql: "ALTER TABLE clipboard_history ADD COLUMN unused BLOB GENERATED ALWAYS AS (zeroblob(2097152)) VIRTUAL; WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 180) INSERT INTO clipboard_history(history_id,value,is_text) SELECT printf('large-source-%d',n),'imported text',1 FROM rows;")
+        defer { backup.remove() }
+        let store = try LibraryStore(inMemory: true)
+        let original = ClipItem(kind: .text, text: "existing")
+        try store.add(original)
+
+        let result = try await store.importPasteBarBackup(from: backup.url)
+
+        XCTAssertEqual(result.importedHistory, 180)
+        XCTAssertEqual(store.items.filter { $0.text == "imported text" }.count, 180)
+        XCTAssertEqual(store.items.first { $0.id == original.id }?.text, "existing")
+    }
+
+    @MainActor func testStored360MiBBackupImportsLargeDatabase() async throws {
+        let backup = try PasteBarFixture(sql: "ALTER TABLE clipboard_history ADD COLUMN unused BLOB; WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 6) INSERT INTO clipboard_history(history_id,value,is_text,unused) SELECT printf('large-database-%d',n),'large backup text',1,zeroblob(62914560) FROM rows;", stored: true)
+        defer { backup.remove() }
+        let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: backup.url.path)[.size] as? NSNumber).int64Value
+        XCTAssertGreaterThan(size, 360 * 1024 * 1024)
+        XCTAssertLessThan(size, 361 * 1024 * 1024)
+        let store = try LibraryStore(inMemory: true)
+
+        let result = try await store.importPasteBarBackup(from: backup.url)
+
+        XCTAssertEqual(result.importedHistory, 6)
+        XCTAssertEqual(store.items.map(\.text), Array(repeating: "large backup text", count: 6))
+    }
+
     @MainActor func testGeneratedMetadataRespectsAggregateReadBudgetBeforePersistence() async throws {
-        let backup = try PasteBarFixture(sql: "ALTER TABLE clipboard_history DROP COLUMN title; ALTER TABLE clipboard_history ADD COLUMN title TEXT GENERATED ALWAYS AS (hex(zeroblob(1048576))) VIRTUAL; WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 129) INSERT INTO clipboard_history(history_id,value,is_text) SELECT printf('generated-%d',n),'small value',1 FROM rows;")
+        let backup = try PasteBarFixture(sql: "ALTER TABLE clipboard_history DROP COLUMN title; ALTER TABLE clipboard_history ADD COLUMN title TEXT GENERATED ALWAYS AS (hex(zeroblob(1048576))) VIRTUAL; WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 251) INSERT INTO clipboard_history(history_id,value,is_text) SELECT printf('generated-%d',n),'small value',1 FROM rows;")
         defer { backup.remove() }
         XCTAssertLessThan(try Data(contentsOf: backup.url).count, 64 * 1024)
         let store = try LibraryStore(inMemory: true)
@@ -491,7 +519,7 @@ final class PasteBarMigrationTests: XCTestCase {
     }
 
     @MainActor func testUnusedGeneratedBlobRespectsAggregateReadBudget() async throws {
-        let backup = try PasteBarFixture(sql: "ALTER TABLE clipboard_history ADD COLUMN unused BLOB GENERATED ALWAYS AS (zeroblob(2097152)) VIRTUAL; WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 129) INSERT INTO clipboard_history(history_id,value,is_text) SELECT printf('generated-%d',n),'small value',1 FROM rows;")
+        let backup = try PasteBarFixture(sql: "ALTER TABLE clipboard_history ADD COLUMN unused BLOB GENERATED ALWAYS AS (zeroblob(2097152)) VIRTUAL; WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 251) INSERT INTO clipboard_history(history_id,value,is_text) SELECT printf('generated-%d',n),'small value',1 FROM rows;")
         defer { backup.remove() }
         XCTAssertLessThan(try Data(contentsOf: backup.url).count, 64 * 1024)
         let store = try LibraryStore(inMemory: true)
@@ -508,7 +536,7 @@ final class PasteBarMigrationTests: XCTestCase {
 struct PasteBarFixture {
     let root: URL
     var url: URL { root.appendingPathComponent("backup.zip") }
-    init(sql: String, images: [String: Data] = [:]) throws {
+    init(sql: String, images: [String: Data] = [:], stored: Bool = false) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var db: OpaquePointer?
@@ -524,7 +552,7 @@ struct PasteBarFixture {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         process.currentDirectoryURL = root
-        process.arguments = ["-q", "-r", url.path, "pastebar-db.data"] + Array(Set(images.keys.map { $0.components(separatedBy: "/")[0] })).sorted()
+        process.arguments = ["-q", "-r"] + (stored ? ["-0"] : []) + [url.path, "pastebar-db.data"] + Array(Set(images.keys.map { $0.components(separatedBy: "/")[0] })).sorted()
         try process.run(); process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
     }
