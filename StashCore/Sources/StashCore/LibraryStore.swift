@@ -102,6 +102,7 @@ import CloudKit
         try withManagedMutation { }
     }
     private func reloadUnlocked() throws {
+        try recoverPendingPasteBarImport()
         if !context.hasChanges { context.refreshAllObjects() }
         let decoder = JSONDecoder()
         var privateItems = try fetch("ClipRecord").compactMap { object -> ClipItem? in
@@ -291,6 +292,110 @@ import CloudKit
                 try commit()
             } catch { context.rollback(); throw error }
         }
+    }
+    @discardableResult public func importPasteBarBackup(from url: URL, now: Date = .now) async throws -> PasteBarImportSummary {
+        let migration = try await Task.detached(priority: .userInitiated) { try PasteBarImporter(url: url, now: now) }.value
+        return try withManagedMutation {
+            var summary = migration.summary
+            var inserted: [(String, String)] = []
+            var checkedPrivateDestinations: Set<UUID> = []
+            for board in migration.pinboards {
+                if try find("BoardRecord", id: board.id) == nil {
+                    var appended = board; appended.order = Double(pinboards.count + summary.importedPinboards)
+                    try writeBoard(appended)
+                    inserted.append(("BoardRecord", board.id.uuidString))
+                    summary.importedPinboards += 1
+                }
+            }
+            for item in migration.items {
+                if try find("ClipRecord", id: item.id) != nil || find("SharedClipRecord", id: item.id) != nil {
+                    summary.duplicates += 1
+                } else if let boardID = item.pinboardID {
+                    guard let board = try find("BoardRecord", id: boardID) else { throw StoreError.unavailable }
+                    if checkedPrivateDestinations.insert(boardID).inserted { try requirePrivatePasteBarDestination(board) }
+                    try requireWritable(board)
+                    try writeClip(item, entity: "SharedClipRecord", parent: board, replaceAssets: true)
+                    inserted.append(("SharedClipRecord", item.id.uuidString))
+                    summary.importedSavedClips += 1
+                } else {
+                    try writeClip(item, entity: "ClipRecord", replaceAssets: true)
+                    inserted.append(("ClipRecord", item.id.uuidString))
+                    summary.importedHistory += 1
+                }
+            }
+            if summary.importedHistory + summary.importedSavedClips + summary.importedPinboards > 0 {
+                do {
+                    for object in context.insertedObjects { try object.validateForInsert() }
+                    try writePasteBarJournal(inserted, committed: false)
+                    try persistenceSaveCheck?()
+                    try context.save()
+                    try writePasteBarJournal(inserted, committed: true)
+                } catch {
+                    let saveError = error
+                    context.rollback()
+                    do {
+                        try removeCommittedMigrationRecords(inserted)
+                        try clearPasteBarJournal()
+                        try reloadUnlocked()
+                    } catch { throw PasteBarImportError.recoveryFailed }
+                    throw saveError
+                }
+                try? clearPasteBarJournal()
+                // A refresh failure cannot roll back an already committed import.
+                do { try reloadUnlocked() } catch { summary.needsRefresh = true }
+            }
+            return summary
+        }
+    }
+    private func requirePrivatePasteBarDestination(_ board: NSManagedObject) throws {
+        guard board.objectID.persistentStore?.url?.lastPathComponent != "Shared.sqlite" else { throw StoreError.privateImportDestination }
+        guard !board.isInserted else { return }
+        // A writable destination can still publish newly imported content to share participants.
+        let shared: Bool
+        do { shared = try pasteBarBoardShareCheck?(board.objectID) ?? (container.fetchShares(matching: [board.objectID])[board.objectID] != nil) }
+        catch { throw StoreError.privateImportDestination }
+        guard !shared else { throw StoreError.privateImportDestination }
+    }
+    @ObservationIgnored internal var pasteBarBoardShareCheck: ((NSManagedObjectID) throws -> Bool)?
+    @ObservationIgnored internal var pasteBarRecoveryCheck: (() throws -> Void)?
+    private var pasteBarJournalURL: URL { directory.appendingPathComponent("PasteBarImport.pending.json") }
+    private func writePasteBarJournal(_ records: [(String, String)], committed: Bool) throws {
+        guard !memory else { return }
+        let journal = PasteBarImportJournal(committed: committed, records: Dictionary(grouping: records, by: { $0.0 }).mapValues { $0.map { $0.1 } })
+        try JSONEncoder().encode(journal).write(to: pasteBarJournalURL, options: .atomic)
+        if !committed { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pasteBarJournalURL.path) }
+    }
+    private func clearPasteBarJournal() throws {
+        if !memory && FileManager.default.fileExists(atPath: pasteBarJournalURL.path) { try FileManager.default.removeItem(at: pasteBarJournalURL) }
+    }
+    private func recoverPendingPasteBarImport() throws {
+        guard !memory, FileManager.default.fileExists(atPath: pasteBarJournalURL.path) else { return }
+        let size = try FileManager.default.attributesOfItem(atPath: pasteBarJournalURL.path)[.size] as? NSNumber
+        guard let size, size.intValue <= 16 * 1024 * 1024 else { throw PasteBarImportError.recoveryFailed }
+        guard let data = try? Data(contentsOf: pasteBarJournalURL), let journal = try? JSONDecoder().decode(PasteBarImportJournal.self, from: data) else { throw PasteBarImportError.recoveryFailed }
+        guard Set(journal.records.keys).isSubset(of: ["ClipRecord", "SharedClipRecord", "BoardRecord"]),
+              journal.records.values.reduce(0, { $0 + $1.count }) <= 200_000,
+              journal.records.values.joined().allSatisfy({ UUID(uuidString: $0) != nil }) else { throw PasteBarImportError.recoveryFailed }
+        if journal.committed { try? clearPasteBarJournal(); return }
+        do {
+            try removeCommittedMigrationRecords(journal.records.flatMap { entity, ids in ids.map { (entity, $0) } })
+            try clearPasteBarJournal()
+        } catch { throw PasteBarImportError.recoveryFailed }
+    }
+    private func removeCommittedMigrationRecords(_ inserted: [(String, String)]) throws {
+        // Core Data can commit one store before another fails; rollback only clears pending edits.
+        let recovery = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        recovery.persistentStoreCoordinator = container.persistentStoreCoordinator
+        for (entity, records) in Dictionary(grouping: inserted, by: { $0.0 }) {
+            let ids = records.map { $0.1 }
+            for start in stride(from: 0, to: ids.count, by: 500) {
+                let request = NSFetchRequest<NSManagedObject>(entityName: entity)
+                request.predicate = NSPredicate(format: "id IN %@", Array(ids[start..<min(start + 500, ids.count)]))
+                for object in try recovery.fetch(request) { recovery.delete(object) }
+            }
+        }
+        if recovery.hasChanges { try pasteBarRecoveryCheck?(); try recovery.save() }
+        context.refreshAllObjects()
     }
     public func undo() throws {
         try withManagedMutation {
@@ -506,8 +611,8 @@ import CloudKit
         clips.inverseRelationship = owner; owner.inverseRelationship = clips; board.properties += [clips]; shared.properties += [owner]
         let model = NSManagedObjectModel(); model.entities = [clip, preference, board, shared]; model.setEntities([clip, preference], forConfigurationName: "History"); model.setEntities([board, shared], forConfigurationName: "Boards"); return model
     }
-    public enum StoreError: LocalizedError { case readOnly, syncDisabled, unavailable
-        public var errorDescription: String? { switch self { case .readOnly: "This shared pinboard is read-only."; case .syncDisabled: "Enable iCloud Sync and reopen Stash before sharing."; case .unavailable: "The operation is not available right now." } }
+    public enum StoreError: LocalizedError { case readOnly, syncDisabled, unavailable, privateImportDestination
+        public var errorDescription: String? { switch self { case .privateImportDestination: "PasteBar migration requires a private pinboard; this destination is shared or its sharing status could not be checked."; case .readOnly: "This shared pinboard is read-only."; case .syncDisabled: "Enable iCloud Sync and reopen Stash before sharing."; case .unavailable: "The operation is not available right now." } }
     }
 }
 
@@ -521,4 +626,9 @@ private final class LibraryNotificationRegistrations {
     init(center: NotificationCenter) { self.center = center }
     func append(_ token: NSObjectProtocol) { tokens.append(token) }
     deinit { for token in tokens { center.removeObserver(token) } }
+}
+
+private struct PasteBarImportJournal: Codable {
+    let committed: Bool
+    let records: [String: [String]]
 }

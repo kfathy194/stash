@@ -205,7 +205,8 @@ p.write_bytes(plistlib.dumps(info))
         import package_release
         package_release.verify_app(self.root/'extracted/Stash.app',a)
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(),receipt['sha256'])
-        self.assertEqual(assets['SHA256SUMS'].decode().strip(),receipt['sha256']+'  Stash-macOS.zip')
+        self.assertEqual(assets['SHA256SUMS'].decode().strip(),receipt['sha256']+'  Stash-macOS.zip\n'+receipt['dmg_sha256']+'  Stash-macOS.dmg')
+        self.assertEqual(hashlib.sha256(assets['Stash-macOS.dmg']).hexdigest(),receipt['dmg_sha256'])
         mutations = list(self.service.mutations)
         self.assertEqual(self.command('reserve',self.a),a)
         self.publish(a,self.root/'package-0.1.1')
@@ -299,7 +300,10 @@ p.write_bytes(plistlib.dumps(info))
         assets = {'Stash-macOS.zip':b'historical zip', 'SHA256SUMS':b'historical sums', 'metadata.json':b'historical receipt'}
         for build in (43,46):
             plan = pipeline.identity('0.1.0',build-2,self.a)
-            pipeline.publish(self.api,plan,assets,'Historical 0.1.0')
+            manifest={'plan':plan,'assets':{name:['sha256:'+hashlib.sha256(data).hexdigest(),len(data)] for name,data in assets.items()}}
+            release=self.api.create(plan,'Historical 0.1.0\n<!-- stash-release:'+json.dumps(manifest)+' -->')
+            for name,data in assets.items():self.api.upload(release,name,data)
+            self.api.publish(release)
             legacy.append(plan)
         draft_plan = pipeline.identity('0.1.0',38,self.b)
         draft = self.api.create(draft_plan,'retained legacy draft')

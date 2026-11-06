@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+helper_root="$(cd "$(dirname "$0")/.." && pwd)"
+exec /usr/bin/python3 "$helper_root/Scripts/local_release.py" pre-push "$1" "$2"

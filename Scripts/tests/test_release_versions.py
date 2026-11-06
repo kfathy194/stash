@@ -337,8 +337,10 @@ class AllocationTests(unittest.TestCase):
             output = root/'release-output'; output.mkdir()
             (output/'Stash-macOS.zip').write_bytes(b'assigned package')
             digest = hashlib.sha256(b'assigned package').hexdigest()
-            (output/'SHA256SUMS').write_text(digest+'  Stash-macOS.zip\n')
-            receipt = dict(plan,sha256=digest,signing='ad-hoc',notarized=False)
+            (output/'Stash-macOS.dmg').write_bytes(b'assigned disk image')
+            dmg_digest = hashlib.sha256(b'assigned disk image').hexdigest()
+            (output/'SHA256SUMS').write_text(digest+'  Stash-macOS.zip\n'+dmg_digest+'  Stash-macOS.dmg\n')
+            receipt = dict(plan,package_format=2,sha256=digest,dmg_sha256=dmg_digest,signing='ad-hoc',notarized=False)
             original_cwd = os.getcwd()
             try:
                 os.chdir(root)

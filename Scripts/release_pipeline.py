@@ -89,6 +89,47 @@ class GitHub:
         if release is None:
             raise ValueError('Staged release disappeared')
         return release
+    def repository_is_private(self):
+        repository = self.request('GET', '/')
+        if not isinstance(repository, dict) or type(repository.get('private')) is not bool:
+            raise ValueError('Cannot verify release repository visibility')
+        return repository['private']
+    def commit_reachable_from_main(self, commit):
+        if not re.fullmatch('[0-9a-f]{40}', commit):
+            raise ValueError('Invalid queued source commit')
+        reference = self.request('GET', '/git/ref/heads/main')
+        if reference is None:
+            return False
+        if not isinstance(reference, dict) or not isinstance(reference.get('object'), dict):
+            raise ValueError('Invalid remote main reference')
+        main_commit = reference['object'].get('sha')
+        if (reference['object'].get('type') != 'commit' or not isinstance(main_commit, str)
+                or not re.fullmatch('[0-9a-f]{40}', main_commit)):
+            raise ValueError('Invalid remote main commit')
+        if main_commit == commit:
+            return True
+        comparison = self.request('GET', f'/compare/{commit}...{main_commit}')
+        if comparison is None:
+            return False
+        if not isinstance(comparison, dict):
+            raise ValueError('Invalid remote commit comparison')
+        base = comparison.get('base_commit')
+        merge_base = comparison.get('merge_base_commit')
+        if (not isinstance(base, dict) or base.get('sha') != commit or
+                not isinstance(merge_base, dict) or
+                not isinstance(merge_base.get('sha'), str) or
+                not re.fullmatch('[0-9a-f]{40}', merge_base['sha'])):
+            raise ValueError('Remote commit comparison identity mismatch')
+        status = comparison.get('status')
+        if status == 'ahead':
+            if merge_base['sha'] != commit:
+                raise ValueError('Remote commit comparison identity mismatch')
+            return True
+        if status in ('behind', 'diverged'):
+            return False
+        if status == 'identical':
+            raise ValueError('Remote commit comparison identity mismatch')
+        raise ValueError('Unknown remote commit comparison state')
     def create(self, plan, notes):
         return self.request('POST', '/releases', dict(tag_name=plan['tag'], target_commitish=plan['commit'], name=plan['tag'], body=notes, draft=True, prerelease=True))
     def upload(self, release, name, data):
@@ -127,28 +168,40 @@ def validate_plan(plan, source, commit_count):
     return plan
 
 
-def package_assets(directory, plan):
+def package_assets(directory, plan, require_dmg=False):
     directory=Path(directory)
-    archive=(directory/'Stash-macOS.zip').read_bytes()
-    digest=hashlib.sha256(archive).hexdigest()
-    checksums=(directory/'SHA256SUMS').read_bytes()
-    if checksums.decode().strip() != digest + '  Stash-macOS.zip':
-        raise ValueError('ZIP checksum mismatch')
     metadata=(directory/'metadata.json').read_bytes()
     receipt=json.loads(metadata)
     for key in ('version','build_number','commit'):
         if receipt.get(key) != plan[key]: raise ValueError('Package identity mismatch')
-    if receipt.get('sha256') != digest or receipt.get('signing') != 'ad-hoc' or receipt.get('notarized') is not False:
+    version = receipt.get('package_format')
+    if version is not None and (type(version) is not int or version != 2):
+        raise ValueError('Unknown package format')
+    if require_dmg and version != 2: raise ValueError('Current publication requires the complete DMG package format')
+    names = ['Stash-macOS.zip', 'Stash-macOS.dmg'] if version == 2 else ['Stash-macOS.zip']
+    if version is None and ('dmg_sha256' in receipt or (directory/'Stash-macOS.dmg').exists()):
+        raise ValueError('Mixed legacy/DMG package contract')
+    assets = {name:(directory/name).read_bytes() for name in names}
+    digests = {name:hashlib.sha256(data).hexdigest() for name,data in assets.items()}
+    checksums=(directory/'SHA256SUMS').read_bytes()
+    expected = ''.join(digests[name] + '  ' + name + '\n' for name in names)
+    if checksums.decode().strip() != expected.strip(): raise ValueError('Package checksum mismatch')
+    if receipt.get('sha256') != digests['Stash-macOS.zip'] or receipt.get('signing') != 'ad-hoc' or receipt.get('notarized') is not False:
         raise ValueError('Package verification receipt mismatch')
-    return {'Stash-macOS.zip':archive, 'SHA256SUMS':checksums, 'metadata.json':metadata}
+    if version == 2 and receipt.get('dmg_sha256') != digests['Stash-macOS.dmg']:
+        raise ValueError('DMG receipt mismatch')
+    return dict(assets, SHA256SUMS=checksums, **{'metadata.json':metadata})
 
 
 def publish(api, plan, assets, notes):
+    allowed = ({'Stash-macOS.zip','SHA256SUMS','metadata.json'}, {'Stash-macOS.zip','Stash-macOS.dmg','SHA256SUMS','metadata.json'})
     tag_commit=api.tag_commit(plan['tag'])
     if tag_commit is not None and tag_commit != plan['commit']:
         raise ValueError('Existing tag points at another commit')
     expected={name: ['sha256:'+hashlib.sha256(data).hexdigest(),len(data)] for name,data in assets.items()}
     release=api.release(plan['tag'])
+    if (release is None or release['draft']) and set(assets) != allowed[1]:
+        raise ValueError('Incomplete package asset contract')
     if release is None:
         manifest=json.dumps({'plan':plan,'assets':expected}, sort_keys=True)
         release=api.create(plan,notes+'\n\n<!-- stash-release:'+manifest+' -->')
@@ -160,7 +213,7 @@ def publish(api, plan, assets, notes):
         saved=json.loads(marker.group(1))
         if saved['plan'] != plan: raise ValueError('Published manifest identity conflict')
         expected=saved['assets']
-        if set(expected) != {'Stash-macOS.zip','SHA256SUMS','metadata.json'}:
+        if set(expected) not in ({'Stash-macOS.zip','SHA256SUMS','metadata.json'}, {'Stash-macOS.zip','Stash-macOS.dmg','SHA256SUMS','metadata.json'}):
             raise ValueError('Published manifest asset set incomplete')
         for value in expected.values():
             if not isinstance(value,list) or len(value)!=2 or not isinstance(value[0],str) or not re.fullmatch('sha256:[0-9a-f]{64}',value[0]) or not isinstance(value[1],int) or value[1] < 1:
@@ -228,7 +281,7 @@ def main():
     else:
         plan=json.loads(Path('release-plan.json').read_text())
         validate_plan(plan, sha, count)
-        assets=package_assets(args.directory,plan)
+        assets=package_assets(args.directory,plan,require_dmg=True)
         notes=f"PR #{event['pull_request']['number']}\nCommit: {sha}\nVersion: {plan['version']} (build {plan['build_number']})\n\nCore tests, universal macOS Release and iOS simulator builds passed.\nDevelopment prerelease: ad-hoc signed and unnotarized; iCloud sync/sharing unavailable. Device, cloud, permission, MCP and commerce acceptance remain open."
         api = GitHub(os.environ['GITHUB_REPOSITORY'],os.environ['GH_TOKEN'])
         from release_versions import lookup

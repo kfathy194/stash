@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var section = "General"
     @State private var ignoredApp = ""
     @State private var restartRequired = false
+    @State private var importingPasteBar = false
     @State private var commerce = Commerce()
     private let sections = ["General", "Shortcuts", "Privacy", "Sync", "Intelligence", "Pinboards", "About"]
     var body: some View {
@@ -52,6 +53,8 @@ struct SettingsView: View {
             Picker("Keep history", selection: Binding(get: { model.settings.retentionDays ?? 0 }, set: { days in changeRetention(days) })) { Text("1 Day").tag(1); Text("1 Week").tag(7); Text("1 Month").tag(30); Text("1 Year").tag(365); Text("Forever").tag(0) }.frame(maxWidth: 300)
             Text("Pinned items stay until you remove them. There is no item-count limit.").font(.caption).foregroundStyle(.secondary)
             Divider(); HStack { Button("Export Library…", action: exportLibrary); Button("Import Library…", action: importLibrary) }
+            Button(importingPasteBar ? "Importing PasteBar…" : "Migrate from PasteBar…", action: migrateFromPasteBar).disabled(importingPasteBar)
+            Text("Choose a PasteBar backup ZIP. History starts from today; saved clips keep their dates and are organized on pinboards. Existing Stash items and preferences are preserved.").font(.caption).foregroundStyle(.secondary)
             Text("Exports contain clipboard content, images and file references. Store your backup somewhere private. File references do not back up the original files.").font(.caption).foregroundStyle(.secondary)
             Button("Erase History…", role: .destructive) { if confirm("Erase clipboard history?", message: "Pinboards are kept. This action cannot be undone.", button: "Erase History") { model.perform { try model.store.eraseHistory() } } }
         }
@@ -109,7 +112,7 @@ struct SettingsView: View {
     }
     private var boards: some View { VStack(alignment: .leading, spacing: 14) { ForEach(model.store.pinboards) { board in HStack { Circle().fill(Color(hex: board.colorHex)).frame(width: 10,height: 10); Text(board.name); Spacer(); Button("Share…") { model.shareBoard(board.id) } } }; Button("New Pinboard…", action: model.newBoard) } }
     private var about: some View {
-        VStack(alignment: .leading, spacing: 14) { StashAppBadge(size:88); Text("Stash 0.1").font(.title2.bold()); Text("A home for the things you copy.").foregroundStyle(.secondary); Text("Built with Apple's native frameworks. Your library belongs to you.")
+        VStack(alignment: .leading, spacing: 14) { StashAppBadge(size:88); Text("Stash").font(.title2.bold()); Text(AppVersion.displayString(bundle: .main)).textSelection(.enabled).foregroundStyle(.secondary); Text("A home for the things you copy.").foregroundStyle(.secondary); Text("Built with Apple's native frameworks. Your library belongs to you.")
             if Commerce.enabled { ForEach(commerce.products, id: \.id) { product in Button(product.displayName + " · " + product.displayPrice) { Task { await commerce.purchase(product) } } }; Button("Restore Purchases") { Task { await commerce.restore() } }; Text(commerce.status) }
         }.task { await commerce.load() }
     }
@@ -122,6 +125,24 @@ struct SettingsView: View {
     private func confirm(_ title: String, message: String, button: String) -> Bool { let alert = NSAlert(); alert.messageText = title; alert.informativeText = message; alert.addButton(withTitle: button); alert.addButton(withTitle: "Cancel"); return alert.runModal() == .alertFirstButtonReturn }
     private func exportLibrary() { let panel = NSSavePanel(); panel.nameFieldStringValue = "Stash-backup.stasharchive"; if panel.runModal() == .OK, let url = panel.url { model.perform { try model.store.archive().write(to: url, options: .atomic) } } }
     private func importLibrary() { let panel = NSOpenPanel(); if panel.runModal() == .OK, let url = panel.url { model.perform { let data = try Data(contentsOf: url); try model.store.importArchive(data); model.message("Library imported") } } }
+    private func migrateFromPasteBar() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip]; panel.allowsMultipleSelection = false
+        panel.message = "Choose the ZIP created by PasteBar's Backup and Restore settings."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        importingPasteBar = true
+        Task {
+            defer { importingPasteBar = false }
+            do {
+                let result = try await model.store.importPasteBarBackup(from: url)
+                let alert = NSAlert()
+                alert.messageText = "PasteBar migration complete"
+                alert.informativeText = result.message
+                alert.runModal()
+            } catch { model.message(error.localizedDescription) }
+        }
+    }
+
 }
 
 struct ShortcutRecorder: NSViewRepresentable {
