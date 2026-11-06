@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+Build/
+Deliverables/
+.work/
+generated_images/
+xcuserdata/
+*.xcuserstate
