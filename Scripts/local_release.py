@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare local development releases before pushing merge commits on main."""
 import argparse
+import ctypes
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -69,6 +70,13 @@ BUILDER_LOCK_PATH = Path('/private/var/db/StashLocalRelease/builder.lock')
 # validates) stays attached.
 BUILDER_PREEXEC = os.setpgrp
 SUDO_KEEPALIVE_INTERVAL_SECONDS = 55
+APPLE_BUILDER_SERVICE_PATHS = frozenset({
+    '/usr/sbin/distnoted', '/usr/sbin/cfprefsd', '/usr/libexec/pkd',
+    '/usr/libexec/lsd', '/usr/libexec/secd', '/usr/libexec/containermanagerd',
+    '/usr/libexec/trustd', '/usr/libexec/fskit_agent',
+    '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/'
+    'Metadata.framework/Versions/A/Support/mdbulkimport',
+})
 SAFE_REMOVE_BUILDER_LAUNCH_AGENTS = r'''import os, stat, sys
 home = os.path.abspath(sys.argv[1])
 uid = int(sys.argv[2])
@@ -260,6 +268,10 @@ def builder_home():
         ['/usr/bin/dscl', '.', '-read', account, 'UserShell'], text=True).strip()
     if shell_info != 'UserShell: /usr/bin/false':
         raise ValueError(f'{BUILDER_USER} must have a non-interactive /usr/bin/false login shell')
+    # Do not start even the role/isolation probes in an unknown active account.
+    # This is eligibility only; normalization and fresh snapshots require the lock.
+    assert_no_builder_sessions()
+    inspect_builder_system_services(uid)
     subprocess.run(['/usr/bin/sudo', '-v'], env=SUDO_ENV, check=True)
     elevated = subprocess.run([
         '/usr/bin/sudo', '-u', BUILDER_USER, '-H', '/usr/bin/env', '-i',
@@ -276,7 +288,6 @@ def builder_home():
     ], env=SUDO_ENV, check=False)
     if isolation.returncode:
         raise ValueError(f'{BUILDER_USER} home is missing or owner home is accessible')
-    assert_builder_account_idle()
     return home
 
 
@@ -348,6 +359,44 @@ def builder_has_processes():
     if result.returncode == 1:
         return False
     raise OSError(f'Cannot inspect {BUILDER_USER} processes: {result.stderr.strip()}')
+
+
+def kernel_process_path(pid):
+    """Read executable identity from the kernel, never from process arguments."""
+    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    function = library.proc_pidpath
+    function.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    function.restype = ctypes.c_int
+    buffer = ctypes.create_string_buffer(4096)
+    length = function(pid, buffer, len(buffer))
+    if length <= 0 or length >= len(buffer):
+        raise OSError(f'Cannot inspect executable identity for builder PID {pid}')
+    return buffer.value.decode('utf-8', errors='strict')
+
+
+def inspect_builder_system_services(uid):
+    status, output = read_bounded_command_output([
+        '/bin/ps', '-U', str(uid), '-u', str(uid), '-o', 'pid=,ruid=,uid=,ppid=',
+    ], 64 * 1024, 256, 5, f'{BUILDER_USER} processes', allowed_return_codes=(0, 1))
+    if status == 1 and output.strip():
+        raise OSError(f'Cannot inspect {BUILDER_USER} processes')
+    seen = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) != 4 or any(not field.isdigit() for field in fields):
+            raise OSError(f'Cannot parse {BUILDER_USER} process identity')
+        pid, real_uid, effective_uid, parent_pid = map(int, fields)
+        if pid <= 1 or pid in seen or real_uid != uid or effective_uid != uid or parent_pid != 1:
+            raise ValueError(f'{BUILDER_USER} has an unknown active process; refusing to alter it')
+        seen.add(pid)
+        executable = Path(kernel_process_path(pid))
+        if str(executable) not in APPLE_BUILDER_SERVICE_PATHS or executable.resolve() != executable:
+            raise ValueError(f'{BUILDER_USER} has an unknown active process; refusing to alter it')
+        metadata = executable.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+                metadata.st_mode & 0o022 or not metadata.st_mode & 0o111):
+            raise ValueError(f'{BUILDER_USER} service executable is not a trusted system file')
+    return bool(seen)
 
 
 def assert_no_builder_sessions():
@@ -713,12 +762,26 @@ def builder_launch_agents_remain_safely(home, uid):
 
 
 def prepare_builder_launchd(home):
-    assert_no_builder_launch_agents(home)
+    uid = builder_uid()
+    assert_no_builder_sessions()
+    if builder_launch_agents_remain_safely(home, uid):
+        raise ValueError(f'{BUILDER_USER} must not have pre-existing LaunchAgents')
+    # Reject unknown activity before cron/at inspection starts a builder session.
+    inspect_builder_system_services(uid)
+    original_crontab = assert_no_builder_crontab()
+    original_at_jobs = assert_no_builder_at_jobs()
+    assert_no_builder_sessions()
+    if builder_launch_agents_remain_safely(home, uid):
+        raise ValueError(f'{BUILDER_USER} must not have pre-existing LaunchAgents')
+    # PAM can activate Apple services during those reads. Reclassify every PID
+    # before allowing any account-wide teardown, including the newly observed set.
+    inspect_builder_system_services(uid)
+    clear_builder_launchd_domain(uid)
+    assert_no_builder_sessions()
     if builder_has_processes():
         raise ValueError(
-            f'{BUILDER_USER} launchd domain is active with running processes; '
-            'refusing to alter it')
-    clear_builder_launchd_domain(builder_uid())
+            f'{BUILDER_USER} must be dedicated to this build and idle before use')
+    return original_crontab, original_at_jobs
 
 
 def cleanup_builder_launchd(home, build_home):
@@ -1017,8 +1080,7 @@ def stream_builder_package(home, commit, workspace, destination):
 
 def build_isolated_package(repo, plan, home, output):
     with builder_account_lock():
-        original_crontab, original_at_jobs = assert_builder_account_idle()
-        prepare_builder_launchd(home)
+        original_crontab, original_at_jobs = prepare_builder_launchd(home)
         workspace = BUILDER_TEMP_ROOT / f'stash-release-{plan["commit"][:12]}-{uuid.uuid4().hex}'
         source = workspace / 'source'
         package = workspace / 'package'

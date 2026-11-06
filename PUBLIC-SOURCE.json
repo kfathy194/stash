@@ -37,7 +37,7 @@
     "Scripts/install_local_release_hook.sh": "27d3b288d6a9e45a351e6a702863ba7b8c822c3e62d14ccd4153e62f223e2399",
     "Scripts/install_local_release_publisher.sh": "79c6241844e1c0954505b1a21b47e420df7755127cd56c779d68338b822ccaf7",
     "Scripts/launch_agents/com.kfathy.stash-local-release-publisher.plist": "7a071a7c670931c0004e430487e74550f6a3bc04eb4cd276c8680ad9c07c3ac8",
-    "Scripts/local_release.py": "c13a84075e9c2563ad55f7fe7e2e1356784ccaf59849be505441ffcf3ce1d1f8",
+    "Scripts/local_release.py": "b711db11cee13d137bc64ee11006f2ee6495cc75f49afc81ade4a5009f86fbf6",
     "Scripts/local_release_publisher.py": "697d30fff8661081bfc30616a1e091f2d683a76668db76281d29c262e2dc450a",
     "Scripts/package_brand.swift": "056e78a8089d28e7258104d4258a47929df84c8b61f68a63bd4368d3c128dc5d",
     "Scripts/package_icns.py": "4e9fab63e9ede71c39b022ef4e73be4568601c6e9bd15d89a059b99461d047c0",
@@ -46,7 +46,7 @@
     "Scripts/release_metadata.py": "59230a3ab6170f672f2ce6a6de3306a779e70c6fc505377b73ae17ab59f95435",
     "Scripts/release_pipeline.py": "a2b84f70e6d20e40e185e9c6efbef44036bbe8c4018ebe6dbff19b001814d043",
     "Scripts/release_versions.py": "b2f28689bf3903d1f3b97b2fb860f02aff953c79fdc09667cf8ecbbee7da2d0b",
-    "Scripts/tests/test_local_release.py": "bf6711e019eb5ba40153ac87ffd1eae3657e08651e7faa04f896c8c1df340996",
+    "Scripts/tests/test_local_release.py": "a9df571d1c73f1c95d4f4aef7a49ebb21a1cfd2b399300069b3f318e94f628b8",
     "Scripts/tests/test_local_release_publisher.py": "827829d0c02b8e16c95439aea1654aebb5d96313925c6e21f836877fc6cebfe6",
     "Scripts/tests/test_release_events.py": "d1584f79afbbb48b690098080f62b089356f3a333e98318db3f43f5782c6245c",
     "Scripts/tests/test_release_package.py": "350912c515c891865fb45baa1813e7d50d40d7eeb4998873d2988bd8eadf5b3e",
@@ -160,6 +160,6 @@
   },
   "note": "Reviewed source export; original Git history and operational records are excluded.",
   "schema": 1,
-  "source_commit": "5737d4b312c5e0a44054532a094a93239aed2c6a",
-  "source_tree": "3f5f6b80b85033da010215506ebc3f7394f7df20"
+  "source_commit": "4a949e5e4c8f6121915b4a73fcdf3f06b0f23f14",
+  "source_tree": "a5fe4f92458ef49f08669d2c42dc6c4bbe6344aa"
 }

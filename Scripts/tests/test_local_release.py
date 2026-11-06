@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import ExitStack, contextmanager
 import grp
 import importlib.util
 import io
@@ -344,14 +345,14 @@ except RuntimeError:
         with patch.object(local_release.Path, 'home', return_value=Path('/Users/fixture-owner')), \
                 patch.object(local_release.subprocess, 'check_output', side_effect=[
                 'NFSHomeDirectory: /Users/stashbuild\n', 'staff\n',
-                'UserShell: /usr/bin/false\n', '']), \
+                'UserShell: /usr/bin/false\n']), \
                 patch.object(local_release, 'builder_uid', return_value=501), \
                 patch.object(local_release, 'validate_builder_home'), \
-                patch.object(local_release, 'assert_no_builder_crontab', return_value=None), \
-                patch.object(local_release, 'assert_no_builder_at_jobs', return_value=frozenset()), \
+                patch.object(local_release, 'assert_no_builder_sessions'), \
+                patch.object(local_release, 'inspect_builder_system_services', return_value=True), \
                 patch.object(local_release.subprocess, 'run', side_effect=[
                     subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1),
-                    subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1)]) as run:
+                    subprocess.CompletedProcess([], 0)]) as run:
             home = local_release.builder_home()
 
         self.assertEqual(home, Path('/Users/stashbuild'))
@@ -359,7 +360,7 @@ except RuntimeError:
         self.assertIn('-n', calls[1])
         self.assertIn('test ! -r', ' '.join(calls[2]))
         self.assertIn('test ! -x', ' '.join(calls[2]))
-        self.assertIn('pgrep', calls[3][0])
+        self.assertEqual(len(calls), 3)
 
     def test_builder_preflight_rejects_interactive_account(self):
         with patch.object(local_release.Path, 'home', return_value=Path('/Users/fixture-owner')), \
@@ -535,14 +536,19 @@ except RuntimeError:
         processes.assert_not_called()
 
     def test_builder_preflight_rejects_existing_launch_agents(self):
-        with patch.object(local_release, 'inspect_builder_launch_agents', return_value=True), \
+        with patch.object(local_release, 'assert_no_builder_sessions'), \
+                patch.object(local_release, 'builder_launch_agents_remain_safely', return_value=True), \
                 patch.object(local_release, 'builder_uid', return_value=501):
             with self.assertRaisesRegex(ValueError, 'pre-existing LaunchAgents'):
                 local_release.prepare_builder_launchd(self.repo / 'builder-home')
 
     def test_builder_preflight_normalizes_dormant_user_domain(self):
         with patch.object(local_release, 'builder_uid', return_value=501), \
-                patch.object(local_release, 'inspect_builder_launch_agents', return_value=False), \
+                patch.object(local_release, 'assert_no_builder_sessions'), \
+                patch.object(local_release, 'builder_launch_agents_remain_safely', return_value=False), \
+                patch.object(local_release, 'inspect_builder_system_services', return_value=False), \
+                patch.object(local_release, 'assert_no_builder_crontab', return_value=None), \
+                patch.object(local_release, 'assert_no_builder_at_jobs', return_value=frozenset()), \
                 patch.object(local_release, 'builder_has_processes', return_value=False), \
                 patch.object(local_release, 'clear_builder_launchd_domain') as bootout:
             local_release.prepare_builder_launchd(self.repo / 'builder-home')
@@ -551,8 +557,10 @@ except RuntimeError:
 
     def test_builder_preflight_refuses_active_user_domain_without_altering_it(self):
         with patch.object(local_release, 'builder_uid', return_value=501), \
-                patch.object(local_release, 'inspect_builder_launch_agents', return_value=False), \
-                patch.object(local_release, 'builder_has_processes', return_value=True), \
+                patch.object(local_release, 'assert_no_builder_sessions'), \
+                patch.object(local_release, 'builder_launch_agents_remain_safely', return_value=False), \
+                patch.object(local_release, 'inspect_builder_system_services',
+                             side_effect=ValueError('unknown active process; refusing to alter it')), \
                 patch.object(local_release, 'clear_builder_launchd_domain') as bootout:
             with self.assertRaisesRegex(ValueError, 'refusing to alter'):
                 local_release.prepare_builder_launchd(self.repo / 'builder-home')
@@ -985,7 +993,7 @@ sys.exit(1)
                 patch.object(local_release, 'prepare_builder_lock'), \
                 patch.object(local_release, 'assert_builder_account_idle',
                              return_value=(None, frozenset())), \
-                patch.object(local_release, 'prepare_builder_launchd'), \
+                patch.object(local_release, 'prepare_builder_launchd', return_value=(None, frozenset())), \
                 patch.object(local_release, 'builder_uid', return_value=501), \
                 patch.object(local_release, 'terminate_builder_account_processes',
                              side_effect=lambda: cleanup_order.append('terminate')), \
@@ -1030,7 +1038,7 @@ sys.exit(1)
         with patch.object(local_release, 'builder_account_lock'), \
                 patch.object(local_release, 'assert_builder_account_idle',
                              return_value=(None, frozenset())), \
-                patch.object(local_release, 'prepare_builder_launchd'), \
+                patch.object(local_release, 'prepare_builder_launchd', return_value=(None, frozenset())), \
                 patch.object(local_release, 'builder_uid', return_value=501), \
                 patch.object(local_release, 'terminate_builder_account_processes', side_effect=sweep), \
                 patch.object(local_release, 'cleanup_builder_launchd'), \
@@ -1063,7 +1071,7 @@ sys.exit(1)
                 patch.object(local_release, 'prepare_builder_lock'), \
                 patch.object(local_release, 'assert_builder_account_idle',
                              return_value=(None, frozenset())), \
-                patch.object(local_release, 'prepare_builder_launchd'), \
+                patch.object(local_release, 'prepare_builder_launchd', return_value=(None, frozenset())), \
                 patch.object(local_release, 'builder_uid', return_value=501), \
                 patch.object(local_release, 'terminate_builder_account_processes',
                              side_effect=sweep_builder) as sweep, \
@@ -1098,7 +1106,7 @@ sys.exit(1)
                 patch.object(local_release, 'prepare_builder_lock'), \
                 patch.object(local_release, 'assert_builder_account_idle',
                              return_value=(None, frozenset())), \
-                patch.object(local_release, 'prepare_builder_launchd'), \
+                patch.object(local_release, 'prepare_builder_launchd', return_value=(None, frozenset())), \
                 patch.object(local_release, 'builder_uid', return_value=501), \
                 patch.object(local_release, 'terminate_builder_account_processes'), \
                 patch.object(local_release, 'cleanup_builder_launchd'), \
@@ -1556,6 +1564,229 @@ sys.exit(1)
         self.assertEqual(first['plan'], plan)
         self.assertEqual(set(path.name for path in Path(first['directory']).iterdir()), {
             'Stash-macOS.zip', 'Stash-macOS.dmg', 'SHA256SUMS', 'metadata.json', 'manifest.json'})
+
+
+class BuilderPreflightRecoveryTests(unittest.TestCase):
+    @contextmanager
+    def builder_fixture(self, snapshots=None, paths=None, session=False, agents=False,
+                        cron=None, at_jobs=frozenset()):
+        state = SimpleNamespace(locked=False, active=True, reads=0, events=[])
+        snapshots = snapshots or ['101 503 503 1\n']
+        paths = {101: '/usr/sbin/distnoted'} if paths is None else paths
+
+        @contextmanager
+        def lock():
+            state.locked = True
+            try:
+                yield
+            finally:
+                state.locked = False
+
+        def read(command, *_args, **_kwargs):
+            self.assertTrue(state.locked, 'process inspection occurred outside the machine lock')
+            if command[0] == '/bin/ps':
+                rows = snapshots[min(state.reads, len(snapshots) - 1)]
+                state.reads += 1
+                state.events.append('process inspection')
+                return (0 if rows else 1), rows.encode()
+            if '/usr/bin/crontab' in command:
+                state.events.append('cron inspection')
+                return (1, b'no crontab for stashbuild\n') if cron is None else (0, cron)
+            if '/usr/bin/atq' in command:
+                state.events.append('at inspection')
+                return 0, b''.join(f'{job} fixture\n'.encode() for job in at_jobs)
+            raise AssertionError(command)
+
+        def sessions(command, **_kwargs):
+            self.assertEqual(command, ['/usr/bin/who'])
+            return 'stashbuild console fixture\n' if session else ''
+
+        def normalize(*_args):
+            self.assertTrue(state.locked)
+            state.events.append('normalize')
+            state.active = False
+
+        def kernel_path(pid):
+            if pid not in paths:
+                raise OSError('fixture executable identity is unavailable')
+            return paths[pid]
+
+        with ExitStack() as stack:
+            for name, replacement in (
+                    ('builder_account_lock', lock), ('builder_uid', lambda: 503),
+                    ('read_bounded_command_output', read),
+                    ('builder_launch_agents_remain_safely', lambda *_args: agents),
+                    ('inspect_builder_launch_agents', lambda *_args: agents),
+                    ('builder_has_processes', lambda: state.active),
+                    ('clear_builder_launchd_domain', normalize),
+                    ('terminate_builder_account_processes', normalize),
+                    ('run_as_builder', lambda *_args, **_kwargs: state.events.append('build')),
+                    ('archive_source_to_builder', lambda *_args: None),
+                    ('stream_builder_package', lambda *_args: None),
+                    ('cleanup_builder_launchd', lambda *_args: None),
+                    ('verify_builder_launchd_clean', lambda *_args: None)):
+                stack.enter_context(patch.object(local_release, name, side_effect=replacement))
+            stack.enter_context(patch.object(local_release.subprocess, 'check_output', side_effect=sessions))
+            stack.enter_context(patch.object(local_release, 'kernel_process_path',
+                                            side_effect=kernel_path))
+            stack.enter_context(patch.object(Path, 'resolve', lambda path: path))
+            stack.enter_context(patch.object(Path, 'lstat', return_value=SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o755, st_uid=0)))
+            yield state
+
+    @staticmethod
+    def build():
+        local_release.build_isolated_package(
+            Path('/unused-fixture'), {'commit': 'a' * 40, 'version': '0.1.1', 'build_number': 1},
+            Path('/Users/stashbuild'), Path('/unused-output'))
+
+    def test_known_apple_services_are_normalized_under_lock_before_build(self):
+        paths = dict(enumerate((
+            '/usr/sbin/distnoted', '/usr/sbin/cfprefsd', '/usr/libexec/pkd',
+            '/usr/libexec/lsd', '/usr/libexec/secd', '/usr/libexec/containermanagerd',
+            '/usr/libexec/trustd', '/usr/libexec/fskit_agent',
+            '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/'
+            'Metadata.framework/Versions/A/Support/mdbulkimport',
+        ), start=101))
+        rows = ''.join(f'{pid} 503 503 1\n' for pid in paths)
+        with self.builder_fixture(snapshots=[rows], paths=paths) as state:
+            self.build()
+        self.assertEqual(state.reads, 2)
+        first_normalize = state.events.index('normalize')
+        self.assertIn('cron inspection', state.events[:first_normalize])
+        self.assertIn('at inspection', state.events[:first_normalize])
+        self.assertEqual(state.events[:first_normalize].count('process inspection'), 2)
+        self.assertLess(first_normalize, state.events.index('build'))
+        self.assertEqual(state.events[:state.events.index('build')].count('normalize'), 1)
+        self.assertNotIn('cron inspection', state.events[first_normalize:])
+        self.assertNotIn('at inspection', state.events[first_normalize:])
+
+    def test_unknown_mixed_and_uninspectable_process_sets_refuse_without_teardown(self):
+        cases = (
+            ('101 503 503 1\n', {101: '/tmp/distnoted'}),
+            ('101 503 503 1\n102 503 503 1\n',
+             {101: '/usr/sbin/distnoted', 102: '/usr/bin/python3'}),
+            ('101 503 503 2\n', {101: '/usr/sbin/distnoted'}),
+            ('101 0 503 1\n', {101: '/usr/sbin/distnoted'}),
+            ('101 503 0 1\n', {101: '/usr/sbin/distnoted'}),
+            ('invalid process data\n', {}),
+            ('101 503 503 1\n', {}),
+        )
+        for rows, paths in cases:
+            with self.subTest(rows=rows, paths=paths), \
+                    self.builder_fixture(snapshots=[rows], paths=paths) as state:
+                with self.assertRaises((ValueError, OSError)):
+                    self.build()
+                self.assertNotIn('normalize', state.events)
+                self.assertNotIn('build', state.events)
+                self.assertNotIn('cron inspection', state.events)
+
+    def test_sessions_agents_and_scheduled_work_refuse_without_teardown(self):
+        for settings in ({'session': True}, {'agents': True}, {'cron': b'* * * * * command\n'},
+                         {'at_jobs': frozenset({'7'})}):
+            with self.subTest(settings=settings), self.builder_fixture(**settings) as state:
+                with self.assertRaises(ValueError):
+                    self.build()
+                self.assertNotIn('normalize', state.events)
+                self.assertNotIn('build', state.events)
+
+    def test_process_set_is_requeried_after_scheduled_state_reads(self):
+        with self.builder_fixture(
+                snapshots=['101 503 503 1\n', '101 503 503 1\n102 503 503 1\n'],
+                paths={101: '/usr/sbin/distnoted', 102: '/usr/bin/python3'}) as state:
+            with self.assertRaisesRegex(ValueError, 'unknown active process'):
+                self.build()
+        self.assertEqual(state.reads, 2)
+        self.assertNotIn('normalize', state.events)
+        self.assertNotIn('build', state.events)
+
+    def test_system_file_metadata_must_be_root_owned_and_nonwritable(self):
+        for metadata in (
+                SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=503),
+                SimpleNamespace(st_mode=stat.S_IFREG | 0o775, st_uid=0),
+                SimpleNamespace(st_mode=stat.S_IFLNK | 0o755, st_uid=0)):
+            with self.subTest(metadata=metadata), self.builder_fixture() as state, \
+                    patch.object(Path, 'lstat', return_value=metadata):
+                with self.assertRaises(ValueError):
+                    self.build()
+                self.assertNotIn('normalize', state.events)
+                self.assertNotIn('build', state.events)
+
+    def test_noncanonical_system_executable_refuses_without_teardown(self):
+        with self.builder_fixture() as state, \
+                patch.object(Path, 'resolve', return_value=Path('/tmp/replaced-service')):
+            with self.assertRaisesRegex(ValueError, 'unknown active process'):
+                self.build()
+        self.assertNotIn('normalize', state.events)
+        self.assertNotIn('build', state.events)
+
+    def test_normalization_failure_preserves_error_and_does_not_start_build(self):
+        with self.builder_fixture() as state, \
+                patch.object(local_release, 'clear_builder_launchd_domain',
+                             side_effect=TimeoutError('normalization fixture')):
+            with self.assertRaisesRegex(TimeoutError, 'normalization fixture'):
+                self.build()
+        self.assertNotIn('build', state.events)
+
+    def test_residual_processes_after_normalization_refuse_build(self):
+        with self.builder_fixture() as state, \
+                patch.object(local_release, 'clear_builder_launchd_domain'), \
+                patch.object(local_release, 'terminate_builder_account_processes'):
+            with self.assertRaisesRegex(ValueError, 'idle before use'):
+                self.build()
+        self.assertNotIn('build', state.events)
+
+    def test_new_process_after_bootout_refuses_build_without_uid_wide_signal(self):
+        with self.builder_fixture() as state:
+            def bootout_then_new_process(_uid):
+                state.active = False  # bootout completed with no builder processes
+                state.events.append('bootout reached idle')
+                state.active = True  # an unexpected PID appeared after that checkpoint
+
+            with patch.object(local_release, 'clear_builder_launchd_domain',
+                              side_effect=bootout_then_new_process), \
+                    patch.object(local_release, 'terminate_builder_account_processes',
+                                 wraps=local_release.terminate_builder_account_processes) as signal_uid:
+                with self.assertRaisesRegex(ValueError, 'idle before use'):
+                    self.build()
+                signal_uid.assert_not_called()
+        self.assertIn('bootout reached idle', state.events)
+        self.assertNotIn('build', state.events)
+
+    def test_inspection_errors_refuse_without_destructive_calls(self):
+        for boundary in ('read_bounded_command_output', 'kernel_process_path'):
+            with self.subTest(boundary=boundary), self.builder_fixture() as state, \
+                    patch.object(local_release, boundary, side_effect=OSError('inspection fixture')):
+                with self.assertRaisesRegex(OSError, 'inspection fixture'):
+                    self.build()
+                self.assertNotIn('normalize', state.events)
+                self.assertNotIn('build', state.events)
+
+    def test_account_role_probes_refuse_unknown_processes_before_starting_sudo(self):
+        def account_output(command, **_kwargs):
+            if command == ['/usr/bin/who']:
+                return ''
+            if command[0] == '/usr/bin/id':
+                return 'staff\n'
+            return ('NFSHomeDirectory: /Users/stashbuild\n' if command[-1] == 'NFSHomeDirectory'
+                    else 'UserShell: /usr/bin/false\n')
+
+        with patch.object(local_release.subprocess, 'check_output', side_effect=account_output), \
+                patch.object(local_release, 'builder_uid', return_value=503), \
+                patch.object(local_release, 'validate_builder_home'), \
+                patch.object(local_release, 'read_bounded_command_output',
+                             return_value=(0, b'101 503 503 1\n')), \
+                patch.object(local_release, 'kernel_process_path', return_value='/tmp/distnoted'), \
+                patch.object(local_release.subprocess, 'run') as commands:
+            with self.assertRaisesRegex(ValueError, 'unknown active process'):
+                local_release.builder_home()
+        commands.assert_not_called()
+
+    def test_kernel_executable_identity_is_available_without_privilege(self):
+        actual = Path(local_release.kernel_process_path(os.getpid()))
+        self.assertTrue(actual.is_absolute())
+        self.assertTrue(actual.is_file())
+        self.assertEqual(actual, actual.resolve())
 
 
 if __name__ == '__main__':
