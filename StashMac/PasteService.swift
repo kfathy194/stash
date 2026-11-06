@@ -83,10 +83,9 @@ import StashCore
                             writers.append(writer)
                         }
                     } else {
-                        let writer = NSPasteboardItem(); writer.setString(item.text, forType: .string)
-                        if let rich = item.richData { writer.setData(rich, forType: .rtf) }
+                        let writer = Self.textPasteboardItem(for: item)
                         if item.kind == .image, let data = item.data, let image = NSImage(data: data), let tiff = image.tiffRepresentation { writer.setData(tiff, forType: .tiff) }
-                        if item.kind == .link { writer.setString(item.text, forType: .URL) }; writers.append(writer)
+                        writers.append(writer)
                     }
                 }
             }
@@ -99,6 +98,14 @@ import StashCore
             return revision
         } catch { model.message(error.localizedDescription); return nil }
     }
+    static func textPasteboardItem(for item: ClipItem) -> NSPasteboardItem {
+        let writer = NSPasteboardItem()
+        writer.setString(item.text, forType: .string)
+        if item.kind != .code, let rich = item.richData { writer.setData(rich, forType: .rtf) }
+        if item.kind == .link { writer.setString(item.text, forType: .URL) }
+        return writer
+    }
+
     func paste(_ items: [ClipItem]? = nil, plain: Bool = false, clickActivation: Bool = false) {
         let values = items ?? model.selected
         if clickActivation, isDoubleClickRepeat(values) { return }

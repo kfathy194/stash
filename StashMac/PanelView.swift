@@ -71,6 +71,11 @@ struct PanelView: View {
                 Button(action: model.newBoard) { Image(systemName: "plus") }.buttonStyle(.plain).help("New pinboard · ⇧⌘N")
             } }.scrollIndicators(.hidden)
             Spacer(minLength: 12)
+            if let boardID = model.currentBoard, model.store.boardIsWritable(boardID) {
+                Button(action: model.newText) { Label("Add item", systemImage: "plus") }
+                    .help("Add item to this pinboard · ⌘N")
+                    .accessibilityLabel("Add item to pinboard")
+            }
             if model.stack.isActive { Menu { Button("Reverse order", systemImage: "arrow.up.arrow.down") { model.stack.reverse() }; ForEach(model.stack.items, id: \.self) { id in Button("Remove: " + (model.store.items.first { $0.id == id }?.displayTitle ?? "Item")) { model.stack.remove(id) } }; Button("Stop Stack") { model.toggleStack() } } label: { Label("\(model.stack.items.count)", systemImage: "square.3.layers.3d") } }
             Button { model.searchFocused.toggle() } label: { Image(systemName: "magnifyingglass") }.help("Search · ⌘F")
             Button { model.showFilters.toggle() } label: { Image(systemName: "line.3.horizontal.decrease.circle") }.help("Filters")

@@ -69,6 +69,7 @@ final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; over
     }
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard window.isVisible, window.isKeyWindow, NSApp.modalWindow == nil else { return event }
+        if Self.handleNewTextShortcut(event, model: model) { return nil }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask); let command = flags.contains(.command), shift = flags.contains(.shift)
         let editing = window.firstResponder is NSTextView
         if event.keyCode == 53 { if !model.query.isEmpty || model.searchFocused { model.query = ""; model.searchFocused = false; window.makeFirstResponder(nil) } else { hide() }; return nil }
@@ -109,6 +110,12 @@ final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; over
         default: if let chars = event.characters, chars.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }), !flags.contains(.control), !flags.contains(.option) { model.query += chars; model.searchFocused = true } else { return event }
         }
         return nil
+    }
+    static func handleNewTextShortcut(_ event: NSEvent, model: AppModel) -> Bool {
+        let intent = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        guard intent == .command, event.charactersIgnoringModifiers?.lowercased() == "n" else { return false }
+        model.newText()
+        return true
     }
     private func plainModifier(_ flags: NSEvent.ModifierFlags) -> Bool { switch model.settings.plainTextModifier { case "option": flags.contains(.option); case "control": flags.contains(.control); default: flags.contains(.shift) } }
     private func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32 { (flags.contains(.command) ? 256 : 0) | (flags.contains(.shift) ? 512 : 0) | (flags.contains(.option) ? 2048 : 0) | (flags.contains(.control) ? 4096 : 0) }

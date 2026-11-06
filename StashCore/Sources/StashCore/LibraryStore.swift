@@ -155,6 +155,20 @@ import CloudKit
             try writeClip(item, entity: "ClipRecord"); try commit()
         }
     }
+    public func add(_ item: ClipItem, to boardID: UUID) throws {
+        try withManagedMutation {
+            guard let board = try find("BoardRecord", id: boardID),
+                  try find("ClipRecord", id: item.id) == nil,
+                  try find("SharedClipRecord", id: item.id) == nil else { throw StoreError.unavailable }
+            try requireWritable(board)
+            var authored = item
+            authored.pinboardID = boardID
+            authored.isInHistory = false
+            authored.order = (items.filter { $0.pinboardID == boardID }.map(\.order).max() ?? -1) + 1
+            try writeClip(authored, entity: "SharedClipRecord", parent: board, replaceAssets: true)
+            try commit()
+        }
+    }
     public func update(_ item: ClipItem, replacingAssets: Bool = false) throws {
         try withManagedMutation {
             var updated = item; updated.modifiedAt = .now
@@ -460,7 +474,13 @@ import CloudKit
     }
     public func sharedGraphItemIDs(_ id: UUID) throws -> [UUID] { guard let board = try find("BoardRecord", id: id) else { return [] }; let children = board.value(forKey: "clips") as? Set<NSManagedObject> ?? []; return children.compactMap { ($0.value(forKey: "id") as? String).flatMap(UUID.init(uuidString:)) } }
     public func boardObject(_ id: UUID) throws -> NSManagedObject? { try find("BoardRecord", id: id) }
-    public func boardIsWritable(_ id: UUID) -> Bool { guard let board = try? find("BoardRecord", id: id) else { return false }; return memory || !settings.syncEnabled || container.canUpdateRecord(forManagedObjectWith: board.objectID) }
+    public func boardIsWritable(_ id: UUID) -> Bool {
+        do {
+            guard let board = try find("BoardRecord", id: id) else { return false }
+            try requireWritable(board)
+            return true
+        } catch { return false }
+    }
     public func shareBoard(_ id: UUID) async throws -> CKShare {
         guard settings.syncEnabled, let board = try find("BoardRecord", id: id) else { throw StoreError.syncDisabled }
         if let existing = try container.fetchShares(matching: [board.objectID])[board.objectID] { return existing }

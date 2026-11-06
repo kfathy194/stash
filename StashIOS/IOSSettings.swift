@@ -40,7 +40,7 @@ struct IOSEditor:View {
     @Environment(\.dismiss) var dismiss
     @State var item:ClipItem
     var onSave:(ClipItem) -> Void
-    var body:some View { NavigationStack { Form { TextField("Title",text:Binding(get:{item.title ?? ""},set:{item.title = $0})); TextEditor(text:$item.text).frame(minHeight:250) }.navigationTitle("Edit Item").toolbar { ToolbarItem(placement:.cancellationAction) { Button("Cancel") {dismiss()} }; ToolbarItem(placement:.confirmationAction) { Button("Save") { item.kind = ContentClassifier.kind(for:item.text); item.richData = nil; onSave(item); dismiss() } } } } }
+    var body:some View { NavigationStack { Form { TextField("Title",text:Binding(get:{item.title ?? ""},set:{item.title = $0})); TextEditor(text:$item.text).frame(minHeight:250) }.navigationTitle("Edit Item").toolbar { ToolbarItem(placement:.cancellationAction) { Button("Cancel") {dismiss()} }; ToolbarItem(placement:.confirmationAction) { Button("Save") { item.updatePlainText(item.text); onSave(item); dismiss() } } } } }
 }
 struct IOSPreview:View {
     let item:ClipItem

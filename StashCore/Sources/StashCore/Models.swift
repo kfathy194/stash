@@ -9,6 +9,7 @@ public enum ClipKind: String, Codable, CaseIterable, Sendable {
 public struct ClipItem: Identifiable, Codable, Hashable, Sendable {
     public var id = UUID()
     public var kind: ClipKind
+    public var codeLanguage: String?
     public var text: String
     public var title: String?
     public var creatorClientID: UUID?
@@ -35,6 +36,14 @@ public struct ClipItem: Identifiable, Codable, Hashable, Sendable {
     public var byteCount: Int = 0
     public init(kind: ClipKind, text: String = "", createdAt: Date = .now) {
         self.kind = kind; self.text = text; self.createdAt = createdAt; self.modifiedAt = createdAt
+    }
+    public mutating func updatePlainText(_ text: String) {
+        self.text = text
+        if kind != .code {
+            kind = ContentClassifier.kind(for: text)
+            codeLanguage = nil
+        }
+        richData = nil
     }
     public var displayTitle: String { title.flatMap { $0.isEmpty ? nil : $0 } ?? linkTitle ?? (kind == .file ? (fileURLs.first.flatMap(URL.init(string:))?.lastPathComponent ?? "File") : kind.label) }
     public var searchableText: String { [title ?? "", text, linkTitle ?? "", linkDomain ?? "", ocrText, fileURLs.joined(separator: " "), sourceAppName, device].joined(separator: "\n") }

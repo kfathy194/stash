@@ -10,6 +10,16 @@
 | Device consent | Local opt-in for iCloud, MCP or Suggestions; never enabled by cloud preferences. |
 | Acceptance gate | A required real-world validation, distinct from successful compilation or unit tests. |
 
+## Authored content
+
+**Item format**:
+A clip item's chosen text-editing mode: Plain Text, Rich Text or Code with one selected language.
+_Avoid_: File extension, paste destination format
+
+**Code item**:
+A clip item containing source text with one selected language, such as CSS, HTML or PHP.
+_Avoid_: Rich-text document, code block
+
 ## Attachments
 
 **Saved attachment**:

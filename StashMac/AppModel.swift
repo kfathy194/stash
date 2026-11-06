@@ -187,7 +187,13 @@ import LinkPresentation
     func newBoard() { prompt(title: "New pinboard", message: "Keep useful things close.") { name in perform { let board = try store.createBoard(name: name); currentBoard = board.id } } }
     func rename() { guard let item = selected.first else { return }; prompt(title: "Name this item", value: item.title ?? "") { title in var copy = item; copy.title = title; perform { try store.update(copy) } } }
     func edit() { guard let item = selected.first, [.text,.richText,.code,.color,.link].contains(item.kind) else { return }; EditorWindow.open(item: item, model: self) }
-    func newText() { EditorWindow.open(item: ClipItem(kind: .text), model: self, isNew: true) }
+    func newText() {
+        if let currentBoard, !store.boardIsWritable(currentBoard) {
+            message("This pinboard is unavailable or read-only. No item was created.")
+            return
+        }
+        EditorWindow.open(item: ClipItem(kind: .text), model: self, isNew: true, destinationBoardID: currentBoard)
+    }
     func deleteSelection() { let ids = Array(selection); perform { try store.delete(ids) }; ids.forEach { stack.remove($0) }; selection = []; selectFirstIfNeeded() }
     func pin(to board: UUID?) { perform { try store.pin(Array(selection), to: board) } }
     func openSelected() {

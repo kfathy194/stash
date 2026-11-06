@@ -203,26 +203,3 @@ import StashCore
         window.contentView = PreviewWindow.unavailableView(message: message, hint: hint)
     }
 }
-
-@MainActor final class EditorWindow: NSObject {
-    static var editors: [EditorWindow] = []
-    let window: NSWindow
-    let textView = NSTextView()
-    var item: ClipItem
-    unowned let model: AppModel
-    let isNew: Bool
-    init(item: ClipItem, model: AppModel, isNew: Bool) {
-        self.item = item; self.model = model; self.isNew = isNew
-        window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 650,height: 450), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        super.init(); window.title = isNew ? "New text" : item.displayTitle; window.isReleasedWhenClosed = false
-        let stack = NSStackView(); stack.orientation = .vertical; stack.spacing = 12; stack.edgeInsets = NSEdgeInsets(top: 16,left: 16,bottom: 16,right: 16)
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.documentView = textView
-        textView.isRichText = true; textView.allowsUndo = true; textView.isVerticallyResizable = true; textView.autoresizingMask = [.width]; textView.textContainer?.widthTracksTextView = true; textView.font = .systemFont(ofSize: 16)
-        if #available(macOS 26, *) { textView.writingToolsBehavior = .complete }
-        if let rich = try? model.store.materialized(item).richData, let attributed = try? NSAttributedString(data: rich, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) { textView.textStorage?.setAttributedString(attributed) } else { textView.string = item.text }
-        let button = NSButton(title: "Save", target: self, action: #selector(save)); button.bezelStyle = .rounded; button.keyEquivalent = "s"
-        stack.addArrangedSubview(scroll); stack.addArrangedSubview(button); window.contentView = stack; scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true; scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
-    }
-    static func open(item: ClipItem, model: AppModel, isNew: Bool = false) { editors.removeAll { !$0.window.isVisible }; let editor = EditorWindow(item: item, model: model, isNew: isNew); editors.append(editor); NSApp.activate(ignoringOtherApps: true); editor.window.center(); editor.window.makeKeyAndOrderFront(nil) }
-    @objc func save() { item.text = textView.string; item.kind = .richText; item.richData = textView.rtf(from: NSRange(location: 0,length: textView.string.utf16.count)); model.perform { if isNew { try model.store.add(item) } else { try model.store.update(item, replacingAssets: true) }; window.close() } }
-}
