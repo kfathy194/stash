@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Bindable var model: AppModel
-    @State private var section = "General"
     @State private var ignoredApp = ""
     @State private var restartRequired = false
     @State private var importingPasteBar = false
@@ -16,13 +15,13 @@ struct SettingsView: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 StashWordmark(size:24).padding(.bottom, 18)
-                ForEach(sections, id: \.self) { name in Button { section = name } label: { Text(name).frame(maxWidth: .infinity, alignment: .leading).padding(9).background(section == name ? .teal.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain) }
+                ForEach(sections, id: \.self) { name in Button { model.settingsSection = name } label: { Text(name).frame(maxWidth: .infinity, alignment: .leading).padding(9).background(model.settingsSection == name ? .teal.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain) }
                 Spacer()
             }.padding(20).frame(width: 160).background(.quaternary.opacity(0.3))
             ScrollView { VStack(alignment: .leading, spacing: 20) {
-                Text(section).font(.title.bold())
+                Text(model.settingsSection).font(.title.bold())
                 if !model.settings.onboardingComplete { onboarding }
-                switch section {
+                switch model.settingsSection {
                 case "General": general
                 case "Shortcuts": shortcuts
                 case "Privacy": privacy
@@ -50,8 +49,7 @@ struct SettingsView: View {
             Toggle("Launch at login", isOn: Binding(get: { SMAppService.mainApp.status == .enabled }, set: { enabled in model.perform { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } }))
             Toggle("Run in the background when windows close", isOn: binding(\.runInBackground))
             Toggle("Show menu bar icon", isOn: Binding(get: { model.settings.showMenuBarIcon }, set: { value in model.saveSettings { $0.showMenuBarIcon = value }; if !value { model.message("Use your shortcut to open Stash.") } }))
-            Picker("Keep history", selection: Binding(get: { model.settings.retentionDays ?? 0 }, set: { days in changeRetention(days) })) { Text("1 Day").tag(1); Text("1 Week").tag(7); Text("1 Month").tag(30); Text("1 Year").tag(365); Text("Forever").tag(0) }.frame(maxWidth: 300)
-            Text("Pinned items stay until you remove them. There is no item-count limit.").font(.caption).foregroundStyle(.secondary)
+            HistoryRetentionSettings(store: model.store, saveSettings: model.saveSettings, reportError: model.message)
             Divider(); HStack { Button("Export Library…", action: exportLibrary); Button("Import Library…", action: importLibrary) }
             Button(importingPasteBar ? "Importing PasteBar…" : "Migrate from PasteBar…", action: migrateFromPasteBar).disabled(importingPasteBar)
             Text("Choose a PasteBar backup ZIP. History starts from today; saved clips keep their dates and are organized on pinboards. Existing Stash items and preferences are preserved.").font(.caption).foregroundStyle(.secondary)
@@ -115,12 +113,6 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 14) { StashAppBadge(size:88); Text("Stash").font(.title2.bold()); Text(AppVersion.displayString(bundle: .main)).textSelection(.enabled).foregroundStyle(.secondary); Text("A home for the things you copy.").foregroundStyle(.secondary); Text("Built with Apple's native frameworks. Your library belongs to you.")
             if Commerce.enabled { ForEach(commerce.products, id: \.id) { product in Button(product.displayName + " · " + product.displayPrice) { Task { await commerce.purchase(product) } } }; Button("Restore Purchases") { Task { await commerce.restore() } }; Text(commerce.status) }
         }.task { await commerce.load() }
-    }
-    private func changeRetention(_ days: Int) {
-        let shorter = days != 0 && (model.settings.retentionDays == nil || days < model.settings.retentionDays!)
-        let expired = model.store.items.contains { $0.pinboardID == nil && Retention.action(for: $0, days: days, now: .now) == .delete }
-        if shorter && expired && !confirm("Delete older history?", message: "Items older than the new limit will be permanently deleted. Pinboards are kept.", button: "Delete Older Items") { return }
-        model.saveSettings { $0.retentionDays = days == 0 ? nil : days }; model.perform { try model.store.applyRetention() }
     }
     private func confirm(_ title: String, message: String, button: String) -> Bool { let alert = NSAlert(); alert.messageText = title; alert.informativeText = message; alert.addButton(withTitle: button); alert.addButton(withTitle: "Cancel"); return alert.runModal() == .alertFirstButtonReturn }
     private func exportLibrary() { let panel = NSSavePanel(); panel.nameFieldStringValue = "Stash-backup.stasharchive"; if panel.runModal() == .OK, let url = panel.url { model.perform { try model.store.archive().write(to: url, options: .atomic) } } }

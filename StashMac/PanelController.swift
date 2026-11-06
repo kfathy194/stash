@@ -4,7 +4,7 @@ import StashCore
 
 final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; override var canBecomeMain: Bool { false } }
 
-@MainActor final class PanelController: NSObject {
+@MainActor final class PanelController: NSObject, NSMenuDelegate {
     unowned let model: AppModel
     let window: StashPanel
     private var statusItem: NSStatusItem?
@@ -32,7 +32,7 @@ final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; over
         let icon = model.settings.isPaused() ? NSImage(systemSymbolName:"pause.rectangle",accessibilityDescription:"Stash paused") : NSImage(named:"StashStatus")
         icon?.isTemplate = true; icon?.size = NSSize(width:18,height:18); statusItem?.button?.image = icon
         statusItem?.button?.toolTip = "Stash — A home for the things you copy."
-        let menu = NSMenu()
+        let menu = NSMenu(); menu.delegate = self
         func add(_ title: String, _ selector: Selector, key: String = "") { let item = NSMenuItem(title: title, action: selector, keyEquivalent: key); item.target = self; menu.addItem(item) }
         add("Open Stash", #selector(openPanel)); menu.addItem(.separator())
         add(model.settings.isPaused() ? "Resume Capture" : "Pause Until Resumed", #selector(togglePause))
@@ -40,16 +40,18 @@ final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; over
         add(model.stack.isActive ? "Stop Paste Stack" : "Start Paste Stack", #selector(toggleStack)); menu.addItem(.separator()); add("Settings…", #selector(settings), key: ","); add("Quit Stash", #selector(quit), key: "q")
         statusItem?.menu = menu
     }
-    @objc private func openPanel() { show() }
+    func menuWillOpen(_ menu: NSMenu) { model.paste.captureMenuDestination() }
+    @objc private func openPanel() { show(fromStatusMenu: true) }
     @objc private func togglePause() { model.togglePause() }
     @objc private func timedPause(_ item: NSMenuItem) { model.pause(minutes: item.tag) }
     @objc private func toggleStack() { model.toggleStack(); updateMenu() }
     @objc private func settings() { model.showSettings() }
     @objc private func quit() { NSApp.terminate(nil) }
     func toggle() { if isVisible { hide() } else { show() } }
-    func show() {
-        let app = NSWorkspace.shared.frontmostApplication
-        if app?.bundleIdentifier != Bundle.main.bundleIdentifier { model.paste.previousApp = app }
+    func show(fromStatusMenu: Bool = false) {
+        model.dismissSuggestions()
+        if let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier != Bundle.main.bundleIdentifier { model.paste.previousApp = app }
+        model.paste.captureDestinationFromFrontmost(useMenuDestination: fromStatusMenu)
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
         let bounds = screen.visibleFrame; let height = min(CGFloat(model.settings.panelHeight), bounds.height * 0.8)
         let target = NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: height)
@@ -57,7 +59,7 @@ final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; over
         NSAnimationContext.runAnimationGroup { context in context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.23; context.timingFunction = CAMediaTimingFunction(name: .easeOut); window.animator().setFrame(target, display: true) }
         model.selectFirstIfNeeded()
     }
-    func hide() { guard isVisible else { return }; window.orderOut(nil); model.suggestions = nil; model.intelligence.cancel() }
+    func hide() { guard isVisible else { return }; window.orderOut(nil); model.paste.clearDestination(); model.panelDidHide() }
     func resize(translation: CGFloat, ended: Bool) {
         if savedResizeHeight == nil { savedResizeHeight = window.frame.height }
         let maximum = (window.screen?.visibleFrame.height ?? 900) * 0.8

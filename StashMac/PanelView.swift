@@ -13,6 +13,7 @@ struct PanelView: View {
                 Capsule().fill(.secondary.opacity(0.4)).frame(width: 40, height: 4).padding(.top, 7).padding(.bottom, 8)
                     .frame(maxWidth: .infinity).contentShape(Rectangle()).gesture(DragGesture().onChanged { model.panel?.resize(translation: -$0.translation.height, ended: false) }.onEnded { model.panel?.resize(translation: -$0.translation.height, ended: true) })
                 toolbar.padding(.horizontal, 24).padding(.bottom, 12)
+                suggestionBanner.padding(.horizontal, 24).padding(.bottom, 10)
                 if model.searchFocused || !model.query.isEmpty || model.showFilters { searchBar.padding(.horizontal, 24).padding(.bottom, 10) }
                 if model.showFilters { filters.padding(.horizontal, 24).padding(.bottom, 10) }
                 if model.visible.isEmpty {
@@ -24,8 +25,7 @@ struct PanelView: View {
                                 ForEach(Array(model.visible.enumerated()), id: \.element.id) { position, item in
                                     CardView(item: item, number: position < 9 ? position + 1 : nil, selected: model.selection.contains(item.id), compact: compact, query: model.query, richPreview: item.kind == .richText ? (try? model.store.materialized(item).richData) : nil)
                                         .frame(width: compact ? 230 : 280).frame(maxHeight: .infinity).id(item.id)
-                                        .onTapGesture(count: 2) { model.select(item); model.paste.paste([item]) }
-                                        .onTapGesture { model.select(item, modifiers: NSEvent.modifierFlags) }
+                                        .onTapGesture { activate(item) }
                                         .contextMenu { itemMenu(item) }
                                         .onDrag { model.select(item); return dragProvider(item) }
                                         .onDrop(of: [UTType(exportedAs:"com.kfathy.stash.item"), .text], isTargeted: nil) { providers in reorderItem(providers, target: item) }
@@ -38,9 +38,10 @@ struct PanelView: View {
                 HStack {
                     StashGlyph().fill(StashBrand.accent).frame(width:13,height:13); Text("Stash").font(.system(size:11,weight:.semibold,design:.rounded))
                     Text("·").foregroundStyle(.tertiary); Text("\(model.visible.count.formatted()) items").foregroundStyle(.secondary)
+                    if model.suggestions != nil { Text("· Suggestions for " + (model.paste.previousApp?.localizedName ?? "your last app")).foregroundStyle(.teal) }
                     if model.settings.isPaused() { Label("Paused", systemImage: "pause.fill").foregroundStyle(.orange) }
                     if let toast = model.toast { Text(toast).lineLimit(1).foregroundStyle(.teal) }
-                    Spacer(); Text("↵ Paste   ⇧↵ Plain text   Space Preview   ⌘F Search").foregroundStyle(.secondary)
+                    Spacer(); Text("Click pastes   ↵ Paste   ⇧↵ Plain text   Space Preview   ⌘F Search").foregroundStyle(.secondary)
                 }.font(.system(size: 11)).padding(.horizontal, 24).padding(.vertical, 12)
             }
         }
@@ -73,9 +74,34 @@ struct PanelView: View {
             if model.stack.isActive { Menu { Button("Reverse order", systemImage: "arrow.up.arrow.down") { model.stack.reverse() }; ForEach(model.stack.items, id: \.self) { id in Button("Remove: " + (model.store.items.first { $0.id == id }?.displayTitle ?? "Item")) { model.stack.remove(id) } }; Button("Stop Stack") { model.toggleStack() } } label: { Label("\(model.stack.items.count)", systemImage: "square.3.layers.3d") } }
             Button { model.searchFocused.toggle() } label: { Image(systemName: "magnifyingglass") }.help("Search · ⌘F")
             Button { model.showFilters.toggle() } label: { Image(systemName: "line.3.horizontal.decrease.circle") }.help("Filters")
-            Button { model.toggleSuggestions() } label: { if model.isRanking { ProgressView().controlSize(.small) } else { Image(systemName: model.suggestions == nil ? "sparkles" : "sparkles.square.filled.on.square") } }.help("Suggestions").contextMenu { Button("Turn off Suggestions") { model.saveSettings { $0.suggestionsEnabled = false }; model.suggestions = nil } }
-            Button(action: model.showSettings) { Image(systemName: "gearshape") }.help("Settings · ⌘,")
+            Button { model.toggleSuggestions() } label: { if model.isRanking { ProgressView().controlSize(.small) } else { Image(systemName: model.suggestions == nil ? "sparkles" : "sparkles.square.filled.on.square") } }
+                .help(model.suggestionsHelp)
+                .accessibilityLabel(model.suggestionsHelp)
+                .contextMenu { Button("Turn off Suggestions") { model.saveSettings { $0.suggestionsEnabled = false } } }
+            Button(action: { model.showSettings() }) { Image(systemName: "gearshape") }.help("Settings · ⌘,")
         }.buttonStyle(.borderless).font(.system(size: 14))
+    }
+    @ViewBuilder private var suggestionBanner: some View {
+        if let notice = model.suggestionNotice {
+            HStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: notice.kind == .failed ? "exclamationmark.triangle" : "sparkles").foregroundStyle(notice.kind == .failed ? .orange : StashBrand.accent)
+                    Text(notice.text).multilineTextAlignment(.leading).textSelection(.enabled)
+                }.accessibilityElement(children: .combine).accessibilityLabel(notice.text)
+                if notice.offersSettings { Button("Open Stash Intelligence") { model.showSettings(section: "Intelligence") } }
+                Spacer(minLength: 4)
+                Button { model.dismissSuggestions() } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).help("Dismiss").accessibilityLabel("Dismiss")
+            }.font(.callout).padding(10).background((notice.kind == .failed ? Color.orange.opacity(0.12) : StashBrand.accent.opacity(0.12)), in: RoundedRectangle(cornerRadius: 10))
+        } else if model.isRanking {
+            HStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Ranking your clips for " + (model.paste.previousApp?.localizedName ?? "your previous app") + "…").foregroundStyle(.secondary)
+                }.accessibilityElement(children: .combine).accessibilityLabel("Ranking your clips")
+                Spacer(minLength: 4)
+                Button("Cancel") { model.toggleSuggestions() }
+            }.font(.callout)
+        }
     }
     private func tab(_ name: String, id: UUID?, color: Color) -> some View {
         Button { model.currentBoard = id; model.query = ""; model.selection = []; model.selectFirstIfNeeded() } label: { HStack(spacing: 7) { Circle().fill(color).frame(width: 7, height: 7); Text(name).lineLimit(1) }.padding(.horizontal, 12).padding(.vertical, 7).background(model.currentBoard == id ? color.opacity(0.16) : .clear, in: Capsule()) }.buttonStyle(.plain)
@@ -111,6 +137,17 @@ struct PanelView: View {
         if item.kind == .image { Button("Extract Text") { let text = ClipItem(kind: .text, text: item.ocrText); model.perform { try model.store.add(text) } }; Button("Rotate Image") { PreviewWindow.rotate(item: item, model: model) } }
         if item.kind == .link || item.kind == .file { Button("Open") { model.select(item); model.openSelected() } }
         Divider(); Button("Delete", role: .destructive) { if !model.selection.contains(item.id) { model.select(item) }; model.deleteSelection() }
+    }
+    /// Only a truly unmodified primary click pastes: any held intent modifier (⌘ ⇧ ⌥ ⌃) keeps
+    /// the click a selection or context gesture and never pastes. Caps Lock and keypad flags are
+    /// keyboard state rather than click modifiers, so they do not suppress pasting. The paste
+    /// service additionally drops a repeated same-item activation inside the double-click
+    /// interval, so multi-clicks and double-clicks cannot insert twice.
+    private func activate(_ item: ClipItem) {
+        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.intersection([.command, .shift, .option, .control]).isEmpty else { model.select(item, modifiers: flags); return }
+        model.select(item)
+        model.paste.paste([item], clickActivation: true)
     }
     private func dragProvider(_ item: ClipItem) -> NSItemProvider {
         let provider: NSItemProvider

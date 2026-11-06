@@ -1,0 +1,38 @@
+{
+  "fill": {
+    "solid": "srgb:0.06275,0.18431,0.20000,1.00000"
+  },
+  "groups": [
+    {
+      "name": "Stash",
+      "layers": [
+        {
+          "name": "Cards and jade ribbon",
+          "image-name": "Stash-macOS-master.png",
+          "glass": false,
+          "position": {
+            "scale": 0.92,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

@@ -36,6 +36,8 @@ for folder, product, bundle, sdk, producttype, suffix in specs:
         assetBuild = add(folder+'.assets.build','PBXBuildFile',fileRef=ref(assets)); resources = [ref(assetBuild)]
     else: resources = []
     if folder=='StashMac':
+        icon=add('StashMac.icon','PBXFileReference',lastKnownFileType='folder.iconcomposer.icon',path='AppIcon.icon',sourceTree='<group>');sourceRefs.append(ref(icon))
+        iconbuild=add('StashMac.icon.build','PBXBuildFile',fileRef=ref(icon));resources.append(ref(iconbuild))
         brand=add('brand.icns','PBXFileReference',lastKnownFileType='image.icns',path='Branding/Stash.icns',sourceTree='SOURCE_ROOT')
         brandbuild=add('brand.icns.build','PBXBuildFile',fileRef=ref(brand));resources.append(ref(brandbuild))
     group = add('group.'+folder, 'PBXGroup', children=sourceRefs, path='StashCore/Sources/StashCore' if folder=='StashCore' else folder, sourceTree='<group>'); groups.append(ref(group))

@@ -14,6 +14,10 @@ func png(_ image:CGImage,_ size:Int,opaque:Bool=false) -> Data {
 func source(_ filename:String) -> CGImage {CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithURL(root.appendingPathComponent(filename) as CFURL,nil)!,0,nil)!}
 let mac=source("Branding/Stash-macOS-master.png")
 let ios=source("Branding/Stash-iOS-master.png")
+// Icon Composer uses the same canonical artwork; its composition removes legacy padding.
+let modernAssets=root.appendingPathComponent("StashMac/AppIcon.icon/Assets")
+try manager.createDirectory(at:modernAssets,withIntermediateDirectories:true)
+try Data(contentsOf:root.appendingPathComponent("Branding/Stash-macOS-master.png")).write(to:modernAssets.appendingPathComponent("Stash-macOS-master.png"))
 let info:[String:Any]=["author":"xcode","version":1]
 let iconset=root.appendingPathComponent("Branding/Stash.iconset");try manager.createDirectory(at:iconset,withIntermediateDirectories:true)
 for size in [16,32,128,256,512] {for scale in [1,2] {try png(mac,size*scale).write(to:iconset.appendingPathComponent("icon_\(size)x\(size)\(scale==2 ? "@2x" : "").png"))}}
