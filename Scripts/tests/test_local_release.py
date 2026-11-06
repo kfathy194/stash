@@ -1007,6 +1007,43 @@ sys.exit(1)
         self.assertEqual(cleanup_call['timeout'], local_release.BUILDER_CLEANUP_TIMEOUT_SECONDS)
         self.assertEqual(cleanup_order, ['terminate', 'launchd', 'terminate', 'verify'])
 
+    def test_workspace_removal_cannot_restart_services_after_final_teardown(self):
+        plan = {'commit': self.old, 'version': '0.1.1', 'build_number': 1}
+        services_running = False
+        workspace_removed = False
+
+        def run_builder(_home, _commit, command, **_kwargs):
+            nonlocal services_running, workspace_removed
+            # sudo/PAM may activate the builder's user domain on every invocation,
+            # including the apparently harmless final workspace removal.
+            services_running = True
+            if command[:3] == ['/bin/rm', '-rf', '--']:
+                workspace_removed = True
+
+        def sweep():
+            nonlocal services_running
+            services_running = False
+
+        def verify(*_args):
+            self.assertFalse(services_running, 'builder services remain at final verification')
+
+        with patch.object(local_release, 'builder_account_lock'), \
+                patch.object(local_release, 'assert_builder_account_idle',
+                             return_value=(None, frozenset())), \
+                patch.object(local_release, 'prepare_builder_launchd'), \
+                patch.object(local_release, 'builder_uid', return_value=501), \
+                patch.object(local_release, 'terminate_builder_account_processes', side_effect=sweep), \
+                patch.object(local_release, 'cleanup_builder_launchd'), \
+                patch.object(local_release, 'verify_builder_launchd_clean', side_effect=verify), \
+                patch.object(local_release, 'run_as_builder', side_effect=run_builder), \
+                patch.object(local_release, 'archive_source_to_builder'), \
+                patch.object(local_release, 'stream_builder_package'):
+            local_release.build_isolated_package(
+                self.repo, plan, self.repo / 'builder-home', self.repo / 'output')
+
+        self.assertTrue(workspace_removed)
+        self.assertFalse(services_running, 'workspace removal restarted services after final teardown')
+
     def test_cleanup_continues_after_first_process_sweep_timeout(self):
         plan = {'commit': self.old, 'version': '0.1.1', 'build_number': 1}
         events = []

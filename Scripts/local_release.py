@@ -1050,6 +1050,14 @@ def build_isolated_package(repo, plan, home, output):
             except BaseException as error:
                 first_process_sweep_error = error
             if workspace_created:
+                # This sudo/PAM invocation can reactivate the user domain.
+                # Finish all builder-account work before the final teardown.
+                try:
+                    run_as_builder(
+                        home, plan['commit'], ['/bin/rm', '-rf', '--', str(workspace)],
+                        timeout=BUILDER_CLEANUP_TIMEOUT_SECONDS)
+                except BaseException as error:
+                    cleanup_errors.append(error)
                 try:
                     cleanup_builder_launchd(home, build_home)
                 except BaseException as error:
@@ -1073,13 +1081,6 @@ def build_isolated_package(repo, plan, home, output):
                     cleanup_errors.append(first_process_sweep_error)
             elif first_process_sweep_error is not None:
                 cleanup_errors.append(first_process_sweep_error)
-            if workspace_created:
-                try:
-                    run_as_builder(
-                        home, plan['commit'], ['/bin/rm', '-rf', '--', str(workspace)],
-                        timeout=BUILDER_CLEANUP_TIMEOUT_SECONDS)
-                except BaseException as error:
-                    cleanup_errors.append(error)
             if cleanup_errors:
                 if primary_error is None:
                     raise cleanup_errors[0]
