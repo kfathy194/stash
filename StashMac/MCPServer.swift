@@ -52,7 +52,7 @@ import StashCore
         func failure(_ code: Int, _ message: String) -> (Int,Data) { (200,json(["jsonrpc":"2.0","id":id,"error":["code":code,"message":message]])) }
         guard request["jsonrpc"] as? String == "2.0", let method = request["method"] as? String else { return failure(-32600,"Invalid request") }
         if method.hasPrefix("notifications/") { return (202,Data()) }
-        if method == "initialize" { return success(["protocolVersion":"2025-03-26","capabilities":["tools":["listChanged":false]],"serverInfo":["name":"Stash","version":"0.1.0"]]) }
+        if method == "initialize" { return success(MCPInitialization.payload(bundle: .main)) }
         if method == "ping" { return success([:]) }
         if method == "tools/list" { return success(["tools":Self.toolDefinitions.filter { definition in let name = definition["name"] as! String; return name == "list_pinboards" ? client.scopes.contains(.readPinboards) : ["create_item","create_pinboard","add_to_pinboard"].contains(name) ? client.scopes.contains(.writeItems) : client.scopes.contains(.readHistory) || client.scopes.contains(.readPinboards) }]) }
         guard method == "tools/call", let params = request["params"] as? [String:Any], let name = params["name"] as? String else { return failure(-32601,"Method not found") }

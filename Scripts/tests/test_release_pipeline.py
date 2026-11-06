@@ -189,3 +189,32 @@ class MoreReleaseTests(unittest.TestCase):
         r.publish(api,plan,assets,'notes')
         api.current['body']='<!-- stash-release:'+r.json.dumps({'plan':plan,'assets':{}})+' -->'
         with self.assertRaises(ValueError):r.publish(api,plan,assets,'notes')
+
+class AssignedCommandTests(unittest.TestCase):
+    def test_materialize_preserves_forwarded_plan_and_rejects_wrong_identity_without_network(self):
+        import os
+        import subprocess
+        import tempfile
+        script = Path(__file__).resolve().parents[1]/'release_pipeline.py'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git','init','-q',directory], check=True)
+            subprocess.run(['git','-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-qm','fixture'],cwd=root,check=True)
+            sha = subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+            event = root/'event.json'
+            event.write_text(json.dumps({'action':'closed','pull_request':{'merged':True,'base':{'ref':'main'},'merge_commit_sha':sha}}))
+            env = dict(os.environ, GITHUB_EVENT_PATH=str(event))
+            env.pop('GH_TOKEN',None)
+            plan = dict(version='0.1.7',build_number=3,commit=sha,tag='v0.1.7-dev.3')
+            def invoke(selected):
+                return subprocess.run(['python3',str(script),'materialize',*[arg for k,v in selected.items() for arg in ('--'+k.replace('_','-'),str(v))]],cwd=root,env=env,capture_output=True,text=True)
+            result = invoke(plan)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads((root/'release-plan.json').read_text()),plan)
+            for change in ({'version':'0.1.8'}, {'build_number':4}, {'commit':'f'*40}, {'tag':'v0.1.7-dev.4'}, {'version':'bad\nsecret=x'}):
+                with self.subTest(change=change):
+                    result = invoke({**plan,**change})
+                    self.assertNotEqual(result.returncode,0)
+                    self.assertEqual(json.loads((root/'release-plan.json').read_text()),plan)
+            event.write_text(json.dumps({'action':'opened'}))
+            self.assertNotEqual(invoke(plan).returncode,0)

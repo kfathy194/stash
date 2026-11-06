@@ -2,6 +2,7 @@
 """Main-merge release planning and publication using the GitHub REST boundary."""
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,16 @@ def identity(version, commit_count, sha):
     return dict(version=version, build_number=number, commit=sha, tag=f'v{version}-dev.{number}')
 
 
+class GitHubError(RuntimeError):
+    def __init__(self, method, status):
+        self.status = status
+        super().__init__(f'GitHub {method} failed ({status}); release not completed')
+
+
+class GitHubTransportError(RuntimeError):
+    pass
+
+
 class GitHub:
     def __init__(self, repository, token):
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
@@ -47,8 +58,11 @@ class GitHub:
                 body = response.read()
                 return json.loads(body) if body else None
         except urllib.error.HTTPError as error:
+            error.close()
             if error.code == 404 and method == 'GET': return None
-            raise RuntimeError(f'GitHub {method} failed ({error.code}); release not completed') from None
+            raise GitHubError(method, error.code) from None
+        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError):
+            raise GitHubTransportError('GitHub connection failed; reread durable state before retry') from None
 
     def release(self, tag):
         # Tag lookup only promises published releases. Interrupted drafts must
@@ -103,6 +117,14 @@ class GitHub:
                             {'tag_name':release['tag_name'],
                              'target_commitish':release['target_commitish'],
                              'draft':False, 'prerelease':True, 'make_latest':'false'})
+
+
+def validate_plan(plan, source, commit_count):
+    if not isinstance(plan, dict) or type(plan.get('build_number')) is not int or not isinstance(plan.get('version'), str):
+        raise ValueError('Invalid release plan')
+    if plan != identity(plan['version'], commit_count, source):
+        raise ValueError('Release plan/source identity mismatch')
+    return plan
 
 
 def package_assets(directory, plan):
@@ -172,25 +194,50 @@ def publish(api, plan, assets, notes):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('action', choices=['plan','publish'])
+    parser.add_argument('action', choices=['plan','publish','reserve','bootstrap-versions','materialize'])
     parser.add_argument('--directory', default='release-output')
+    for field in ('version', 'build-number', 'commit', 'tag'):
+        parser.add_argument('--' + field)
     args=parser.parse_args()
+    if args.action == 'bootstrap-versions':
+        from release_versions import bootstrap
+        print(json.dumps(bootstrap(GitHub(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN']))))
+        return
     event=json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     sha=merged_revision(event)
-    if args.action == 'plan':
-        head=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
-        if head != sha: raise ValueError('Checkout is not the merged revision')
-        version=Path('Config/ReleaseVersion.txt').read_text().strip()
-        count=int(subprocess.check_output(['git','rev-list','--count',sha], text=True))
-        plan=identity(version,count,sha)
+    head=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+    if head != sha: raise ValueError('Checkout is not the merged revision')
+    count=int(subprocess.check_output(['git','rev-list','--count',sha], text=True))
+    if args.action == 'materialize':
+        if not isinstance(args.build_number, str) or not re.fullmatch('[1-9][0-9]*', args.build_number):
+            raise ValueError('Invalid forwarded build number')
+        plan = dict(version=args.version, build_number=int(args.build_number), commit=args.commit, tag=args.tag)
+        validate_plan(plan, sha, count)
+        Path('release-plan.json').write_text(json.dumps(plan))
+        return
+    if args.action in ('plan', 'reserve'):
+        version=Path('Config/ReleaseVersion.txt').read_text().strip() if args.action == 'plan' else None
+        if args.action == 'reserve':
+            from release_versions import reserve
+            plan=reserve(GitHub(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN']),event,count)
+        else:
+            plan=identity(version,count,sha)
         Path('release-plan.json').write_text(json.dumps(plan))
         with open(os.environ['GITHUB_OUTPUT'],'a') as output:
             for key,value in plan.items(): output.write(f'{key}={value}\n')
     else:
         plan=json.loads(Path('release-plan.json').read_text())
-        if plan['commit'] != sha: raise ValueError('Release plan/source mismatch')
+        validate_plan(plan, sha, count)
         assets=package_assets(args.directory,plan)
         notes=f"PR #{event['pull_request']['number']}\nCommit: {sha}\nVersion: {plan['version']} (build {plan['build_number']})\n\nCore tests, universal macOS Release and iOS simulator builds passed.\nDevelopment prerelease: ad-hoc signed and unnotarized; iCloud sync/sharing unavailable. Device, cloud, permission, MCP and commerce acceptance remain open."
-        publish(GitHub(os.environ['GITHUB_REPOSITORY'],os.environ['GH_TOKEN']),plan,assets,notes)
+        api = GitHub(os.environ['GITHUB_REPOSITORY'],os.environ['GH_TOKEN'])
+        from release_versions import lookup
+        if lookup(api, sha) != plan:
+            raise ValueError('Release plan differs from original ledger assignment')
+        publish(api,plan,assets,notes)
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    # The allocator imports this public adapter; retain the CLI's exception types.
+    import sys
+    sys.modules['release_pipeline'] = sys.modules[__name__]
+    main()

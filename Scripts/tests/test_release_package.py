@@ -90,9 +90,11 @@ class ExtractedBundleTests(unittest.TestCase):
             app = Path(kwargs['env']['STASH_CHECK_ROOT'])/'mac/Build/Products/Release/Stash.app'
             shutil.copytree(self.app, app)
             info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
-            info.update(StashCloudKitEnabled=True, CKSharingSupported=True)
+            info.update(StashCloudKitEnabled=True, CKSharingSupported=True,
+                        CFBundleShortVersionString=kwargs['env']['STASH_RELEASE_VERSION'],
+                        CFBundleVersion=kwargs['env']['STASH_BUILD_NUMBER'])
             (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
-        argv = ['package_release.py', '--version', '0.1.0', '--build-number', '42',
+        argv = ['package_release.py', '--version', '0.1.7', '--build-number', '42',
                 '--commit', commit, '--output', str(output)]
         with patch.object(sys, 'argv', argv), patch.object(self.package, 'run', build_or_run):
             self.package.main()
@@ -104,7 +106,12 @@ class ExtractedBundleTests(unittest.TestCase):
         info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
         self.assertIs(info['StashCloudKitEnabled'], False)
         self.assertIs(info['CKSharingSupported'], False)
-        self.assertEqual(json.loads((output/'metadata.json').read_text())['commit'], commit)
+        receipt = json.loads((output/'metadata.json').read_text())
+        self.assertEqual((info['CFBundleShortVersionString'], info['CFBundleVersion']), ('0.1.7', '42'))
+        self.assertEqual((receipt['version'], receipt['build_number'], receipt['commit']), ('0.1.7', 42, commit))
+        import release_pipeline
+        plan = release_pipeline.identity('0.1.7', 40, commit)
+        self.assertEqual(set(release_pipeline.package_assets(output, plan)), {'Stash-macOS.zip','SHA256SUMS','metadata.json'})
 
     def test_restricted_icloud_claims_fail_even_with_valid_signature(self):
         import plistlib
