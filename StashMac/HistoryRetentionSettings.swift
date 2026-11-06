@@ -6,6 +6,27 @@ struct HistoryRetentionSettings: View {
     let store: LibraryStore
     let saveSettings: ((inout LibrarySettings) -> Void) -> Bool
     let reportError: (String) -> Void
+
+    var body: some View {
+        HistoryRetentionPicker(retentionDays: Binding(get: { store.settings.retentionDays }, set: changeRetention))
+    }
+
+    private func changeRetention(_ days: Int?) {
+        if store.requiresHistoryDeletionConfirmation(retentionDays: days) {
+            let alert = NSAlert()
+            alert.messageText = "Delete older history?"
+            alert.informativeText = "Items older than the new limit will be permanently deleted. Pinboards are kept."
+            alert.addButton(withTitle: "Delete Older Items")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        guard saveSettings({ $0.retentionDays = days }) else { return }
+        do { try store.applyRetention() } catch { store.context.rollback(); reportError(error.localizedDescription) }
+    }
+}
+
+struct HistoryRetentionPicker: View {
+    @Binding var retentionDays: Int?
     @State private var editingCustomRetention = false
     @State private var customRetentionText = ""
     @State private var customRetentionError: String?
@@ -19,31 +40,25 @@ struct HistoryRetentionSettings: View {
             Text("Pinned items stay until you remove them. There is no item-count limit.").font(.caption).foregroundStyle(.secondary)
         }
     }
-    private func changeRetention(_ days: Int) {
-        let shorter = days != 0 && (store.settings.retentionDays == nil || days < store.settings.retentionDays!)
-        let expired = store.items.contains { $0.pinboardID == nil && Retention.action(for: $0, days: days, now: .now) == .delete }
-        if shorter && expired && !confirm("Delete older history?", message: "Items older than the new limit will be permanently deleted. Pinboards are kept.", button: "Delete Older Items") { return }
-        guard saveSettings({ $0.retentionDays = days == 0 ? nil : days }) else { return }
-        do { try store.applyRetention() } catch { store.context.rollback(); reportError(error.localizedDescription) }
-    }
     // The picker's day presets; Forever is stored as nil and Custom as any other positive count.
     private static let presetDays: Set<Int> = [1, 7, 30, 365]
     private static let customRetentionTag = -1
     private var isCustomRetentionSelected: Bool {
-        guard let days = store.settings.retentionDays else { return false }
+        guard let days = retentionDays else { return false }
         return days > 0 && !Self.presetDays.contains(days)
     }
     private var retentionSelection: Int {
-        guard let days = store.settings.retentionDays else { return 0 }
+        guard let days = retentionDays else { return 0 }
         return Self.presetDays.contains(days) ? days : Self.customRetentionTag
     }
     private var customMenuTitle: String {
-        guard isCustomRetentionSelected, let days = store.settings.retentionDays else { return "Custom…" }
+        guard isCustomRetentionSelected, let days = retentionDays else { return "Custom…" }
         return "Custom… (\(days) days)"
     }
     private func selectRetention(_ tag: Int) {
         guard tag != Self.customRetentionTag else { beginCustomRetention(); return }
-        cancelCustomRetention(); changeRetention(tag)
+        cancelCustomRetention()
+        retentionDays = tag == 0 ? nil : tag
     }
     private var customRetentionEditor: some View {
         GroupBox(label: Text("Custom period").font(.headline)) {
@@ -59,7 +74,7 @@ struct HistoryRetentionSettings: View {
         }
     }
     private func beginCustomRetention() {
-        customRetentionText = store.settings.retentionDays.flatMap { Self.presetDays.contains($0) || $0 <= 0 ? nil : String($0) } ?? ""
+        customRetentionText = retentionDays.flatMap { Self.presetDays.contains($0) || $0 <= 0 ? nil : String($0) } ?? ""
         customRetentionError = nil
         editingCustomRetention = true
     }
@@ -73,7 +88,7 @@ struct HistoryRetentionSettings: View {
             let days = try Self.customDays(from: customRetentionText)
             customRetentionError = nil
             editingCustomRetention = false
-            changeRetention(days)
+            retentionDays = days
         } catch let error as CustomDaysError { customRetentionError = Self.customRetentionMessage(for: error) } catch { customRetentionError = error.localizedDescription }
     }
     private enum CustomDaysError: Error { case empty, notWhole, notPositive, notRepresentable }
@@ -98,5 +113,4 @@ struct HistoryRetentionSettings: View {
         case .notRepresentable: "That number is too large to store. Enter a smaller number of days."
         }
     }
-    private func confirm(_ title: String, message: String, button: String) -> Bool { let alert = NSAlert(); alert.messageText = title; alert.informativeText = message; alert.addButton(withTitle: button); alert.addButton(withTitle: "Cancel"); return alert.runModal() == .alertFirstButtonReturn }
 }

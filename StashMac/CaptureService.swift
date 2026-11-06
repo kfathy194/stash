@@ -2,26 +2,62 @@ import AppKit
 import StashCore
 
 @MainActor final class CaptureService {
+    struct Source {
+        let changeCount: () -> Int
+        let readAllowedItem: (LibrarySettings) -> ClipItem?
+    }
+
     unowned let model: AppModel
+    private let source: Source
     private var timer: Timer?
     private var lastChange: Int
     private var lastRetention = Date.distantPast
-    init(model: AppModel) { self.model = model; lastChange = NSPasteboard.general.changeCount }
-    func start() { timer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in Task { @MainActor in self?.poll() } } }
-    func suppressCurrentChange() { lastChange = NSPasteboard.general.changeCount }
-    func poll() {
-        if Date().timeIntervalSince(lastRetention) > 3600 { lastRetention = .now; model.perform { try model.store.applyRetention() } }
-        let board = NSPasteboard.general
-        guard board.changeCount != lastChange else { return }; lastChange = board.changeCount
-        let app = NSWorkspace.shared.frontmostApplication
-        guard app?.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
-        let types = (board.types ?? []).map(\.rawValue)
-        guard CapturePolicy.allows(types: types, app: app?.bundleIdentifier, settings: model.settings, now: .now) else { return }
-        guard var item = read(board) else { return }
-        item.sourceAppID = app?.bundleIdentifier ?? ""; item.sourceAppName = app?.localizedName ?? "Unknown app"; item.device = Host.current().localizedName ?? "Mac"
-        model.captured(item)
+
+    init(model: AppModel, source: Source? = nil) {
+        self.model = model
+        let source = source ?? Source(
+            changeCount: { NSPasteboard.general.changeCount },
+            readAllowedItem: Self.readSystemClipboard
+        )
+        self.source = source
+        lastChange = source.changeCount()
     }
-    func read(_ board: NSPasteboard) -> ClipItem? {
+
+    func start() {
+        guard timer == nil else { return }
+        suppressCurrentChange()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.poll() }
+        }
+    }
+
+    func suppressCurrentChange() { lastChange = source.changeCount() }
+
+    func poll() {
+        if Date().timeIntervalSince(lastRetention) > 3600 {
+            lastRetention = .now
+            model.perform { try model.store.applyRetention() }
+        }
+        let change = source.changeCount()
+        guard change != lastChange else { return }
+        lastChange = change
+        if let item = source.readAllowedItem(model.settings) { model.captured(item) }
+    }
+
+    private static func readSystemClipboard(settings: LibrarySettings) -> ClipItem? {
+        let board = NSPasteboard.general
+        let app = NSWorkspace.shared.frontmostApplication
+        guard app?.bundleIdentifier != Bundle.main.bundleIdentifier else { return nil }
+        let types = (board.types ?? []).map(\.rawValue)
+        guard CapturePolicy.allows(types: types, app: app?.bundleIdentifier, settings: settings, now: .now),
+              var item = read(board) else { return nil }
+        item.sourceAppID = app?.bundleIdentifier ?? ""
+        item.sourceAppName = app?.localizedName ?? "Unknown app"
+        item.device = Host.current().localizedName ?? "Mac"
+        return item
+    }
+
+    private static func read(_ board: NSPasteboard) -> ClipItem? {
         if let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
             var item = ClipItem(kind: .file, text: urls.map(\.lastPathComponent).joined(separator: "\n")); item.fileURLs = urls.map(\.absoluteString)
             item.fileBookmarks = FileBookmarks.capture(urls: urls) { try? $0.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) }

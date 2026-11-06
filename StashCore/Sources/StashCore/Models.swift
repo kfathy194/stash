@@ -88,6 +88,8 @@ public struct LibrarySettings: Codable, Equatable, Sendable {
     // Carbon cmdKey = 256, shiftKey = 512, optionKey = 2048, controlKey = 4096
     public var panelShortcut = KeyBinding(keyCode: 9, modifiers: 768)
     public var stackShortcut = KeyBinding(keyCode: 8, modifiers: 768)
+    public var panelShortcutDisabled: Bool?
+    public var stackShortcutDisabled: Bool?
     public var nextBoardShortcut = KeyBinding(keyCode: 124, modifiers: 256)
     public var previousBoardShortcut = KeyBinding(keyCode: 123, modifiers: 256)
     public init() {}

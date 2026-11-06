@@ -16,6 +16,7 @@ import LinkPresentation
     var showFilters = false
     var searchFocused = false
     var toast: String?
+    var showsSetupGuide = false
     var stack = PasteStack()
     @ObservationIgnored private let suggestionCoordinator: SuggestionsCoordinator
     @ObservationIgnored private let settingsPresenter: @MainActor (AppModel) -> Void
@@ -27,6 +28,7 @@ import LinkPresentation
     @ObservationIgnored var mcp: MCPServer?
     @ObservationIgnored var intelligence = IntelligenceService()
     @ObservationIgnored var settingsWindow: NSWindow?
+    @ObservationIgnored var openSetupWizard: (() -> Void)?
     @ObservationIgnored var toastTask: Task<Void, Never>?
     var settings: LibrarySettings { store.settings }
     var visible: [ClipItem] {
@@ -131,9 +133,36 @@ import LinkPresentation
 
     func panelDidHide() { dismissSuggestions() }
 
+    func prepareHistoryAfterSetup() {
+        dismissSuggestions()
+        currentBoard = nil
+        query = ""
+        filter = .init()
+        showFilters = false
+        searchFocused = false
+        selection = []
+        anchor = nil
+        selectFirstIfNeeded()
+        showsSetupGuide = true
+    }
+
+    var openStashGuidance: String {
+        if requiresOpenStashMenuItem { return "Open Stash from the menu bar." }
+        return "Open Stash with " + shortcutLabel(settings.panelShortcut) + "."
+    }
+
+    var requiresMenuBarAccess: Bool {
+        requiresOpenStashMenuItem || settings.stackShortcutDisabled == true || hotkeys?.isRegistered(.stack) == false
+    }
+
+    private var requiresOpenStashMenuItem: Bool {
+        settings.panelShortcutDisabled == true || hotkeys?.isRegistered(.panel) == false
+    }
+
     func start(captureEnabled: Bool = true) {
-        paste = PasteService(model: self); capture = CaptureService(model: self); hotkeys = HotKeyService(model: self)
-        if captureEnabled { capture.start() }; hotkeys.register(); perform { try store.applyRetention() }
+        paste = PasteService(model: self); capture = CaptureService(model: self)
+        if hotkeys == nil { hotkeys = HotKeyService(model: self) }
+        if captureEnabled { capture.start() }; hotkeys.register(); panel?.updateMenu(); perform { try store.applyRetention() }
         if settings.mcpEnabled { startMCP() }
     }
     @discardableResult func perform<T>(_ operation: () throws -> T) -> T? { do { return try operation() } catch { store.context.rollback(); message(error.localizedDescription); return nil } }

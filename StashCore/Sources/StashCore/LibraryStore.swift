@@ -179,20 +179,114 @@ import CloudKit
     }
     public func updateSettings(_ newSettings:LibrarySettings) throws {
         try withManagedMutation {
-            let previous=devicePreferences
-            devicePreferences=DevicePreferences(newSettings)
-            do {
-                if !memory {try JSONEncoder().encode(devicePreferences).write(to:directory.appendingPathComponent("DeviceSettings.json"),options:.atomic)}
-                var synced=newSettings
-                synced.mcpEnabled=false;synced.suggestionsEnabled=false;synced.syncEnabled=false;synced.onboardingComplete=false;synced.showMenuBarIcon=true;synced.panelHeight=350
-                let object=try fetch("PreferenceRecord").first ?? newObject("PreferenceRecord",store:"History")
-                object.setValue("settings",forKey:"id");object.setValue(try JSONEncoder().encode(synced),forKey:"payload");object.setValue(Date(),forKey:"modifiedAt")
-                try commit()
-            } catch {
-                context.rollback();devicePreferences=previous
-                if !memory {try? JSONEncoder().encode(previous).write(to:directory.appendingPathComponent("DeviceSettings.json"),options:.atomic)}
-                throw error
+            try commitSettingsUnlocked(newSettings)
+        }
+    }
+
+    /// Checks the current History snapshot without changing it.
+    public func requiresHistoryDeletionConfirmation(retentionDays: Int?, now: Date = .now) -> Bool {
+        guard let retentionDays, settings.retentionDays.map({ retentionDays < $0 }) ?? true else { return false }
+        return items.contains { $0.isInHistory && Retention.action(for: $0, days: retentionDays, now: now) == .delete }
+    }
+
+    /// Checks and commits the edited policy and affected History in one managed mutation.
+    /// A false result leaves the library untouched. Preparation runs after the deletion
+    /// check and may adjust other settings. It must not reenter library mutations.
+    public func updateSettingsApplyingRetention(
+        confirmHistoryDeletion: Bool,
+        now: Date = .now,
+        onboardingReceiptID: UUID? = nil,
+        edit: (inout LibrarySettings) -> Void,
+        prepare: (inout LibrarySettings) throws -> Void
+    ) throws -> Bool {
+        try withManagedMutation {
+            var updated = settings
+            edit(&updated)
+            let retentionDays = updated.retentionDays
+            guard confirmHistoryDeletion || !requiresHistoryDeletionConfirmation(retentionDays: retentionDays, now: now) else {
+                return false
             }
+            try prepare(&updated)
+            updated.retentionDays = retentionDays
+            let removed = retentionDays == settings.retentionDays ? [] : try stageRetention(days: retentionDays, now: now)
+            if updated != settings || onboardingReceiptID != nil {
+                try commitSettingsUnlocked(updated, removed: removed, onboardingReceiptID: onboardingReceiptID)
+            }
+            try cleanManagedFiles([])
+            return true
+        }
+    }
+
+    /// Persistent history keeps the receipt in the local transaction alongside
+    /// the committed History policy. It is not part of the synced preference payload.
+    /// History pruning must retain receipts referenced by unfinished setup drafts.
+    public func hasOnboardingSettingsReceipt(_ id: UUID) throws -> Bool {
+        guard let store = container.persistentStoreCoordinator.persistentStores.first(where: {
+            $0.url?.lastPathComponent == "History.sqlite"
+        }), let entity = NSPersistentHistoryTransaction.entityDescription(with: context) else {
+            throw StoreError.unavailable
+        }
+        let fetch = NSFetchRequest<NSFetchRequestResult>()
+        fetch.entity = entity
+        fetch.predicate = NSPredicate(format: "author == %@", Self.onboardingTransactionAuthor(id))
+        fetch.fetchLimit = 1
+        let request = NSPersistentHistoryChangeRequest.fetchHistory(withFetch: fetch)
+        request.affectedStores = [store]
+        request.resultType = .transactionsOnly
+        guard let result = try context.execute(request) as? NSPersistentHistoryResult,
+              let transactions = result.result as? [NSPersistentHistoryTransaction] else {
+            throw StoreError.unavailable
+        }
+        return !transactions.isEmpty
+    }
+
+    private static func onboardingTransactionAuthor(_ id: UUID) -> String {
+        "Stash.MacOnboarding." + id.uuidString
+    }
+
+    private func commitSettingsUnlocked(
+        _ newSettings: LibrarySettings,
+        removed: [UUID] = [],
+        onboardingReceiptID: UUID? = nil
+    ) throws {
+        let previous = devicePreferences
+        let preferencesURL = directory.appendingPathComponent("DeviceSettings.json")
+        devicePreferences = DevicePreferences(newSettings)
+        do {
+            if !memory { try JSONEncoder().encode(devicePreferences).write(to: preferencesURL, options: .atomic) }
+            var synced = newSettings
+            synced.mcpEnabled = false
+            synced.suggestionsEnabled = false
+            synced.syncEnabled = false
+            synced.onboardingComplete = false
+            synced.showMenuBarIcon = true
+            synced.panelHeight = 350
+            synced.panelShortcutDisabled = nil
+            synced.stackShortcutDisabled = nil
+            let object = try fetch("PreferenceRecord").first ?? newObject("PreferenceRecord", store: "History")
+            object.setValue("settings", forKey: "id")
+            object.setValue(try JSONEncoder().encode(synced), forKey: "payload")
+            object.setValue(Date(), forKey: "modifiedAt")
+            try persistenceSaveCheck?()
+            let priorAuthor = context.transactionAuthor
+            if let onboardingReceiptID { context.transactionAuthor = Self.onboardingTransactionAuthor(onboardingReceiptID) }
+            defer { context.transactionAuthor = priorAuthor }
+            try context.save()
+        } catch {
+            context.rollback()
+            devicePreferences = previous
+            if !memory { try? JSONEncoder().encode(previous).write(to: preferencesURL, options: .atomic) }
+            throw error
+        }
+        if !memory { pendingFileCleanup.formUnion(removed) }
+        do { try reloadUnlocked() }
+        catch { throw SettingsRefreshError(detail: error.localizedDescription) }
+    }
+
+    public struct SettingsRefreshError: LocalizedError {
+        let detail: String
+        public var errorDescription: String? {
+            "Your settings were saved, but Stash couldn’t refresh the library. " + detail
         }
     }
     @discardableResult public func createBoard(name: String, colorHex: String = "30B7A8") throws -> Pinboard {
@@ -280,17 +374,31 @@ import CloudKit
     }
     public func applyRetention(now: Date = .now) throws {
         try withManagedMutation {
-            var removed: [UUID] = []
-            for item in items where item.isInHistory {
-                switch Retention.action(for: item, days: settings.retentionDays, now: now) {
-                case .keep: break
-                case .delete: if let object = try find("ClipRecord", id: item.id) { try requireWritable(object); removed.append(contentsOf: try managedFileIDs(for: [item])); context.delete(object) }
-                case .removeFromHistory: var copy = item; copy.isInHistory = false; try writeClip(copy, entity: "ClipRecord")
-                }
-            }
+            let removed = try stageRetention(days: settings.retentionDays, now: now)
             if context.hasChanges { try commit() }
             try cleanManagedFiles(removed)
         }
+    }
+
+    private func stageRetention(days: Int?, now: Date) throws -> [UUID] {
+        var removed: [UUID] = []
+        for item in items where item.isInHistory {
+            switch Retention.action(for: item, days: days, now: now) {
+            case .keep:
+                break
+            case .delete:
+                if let object = try find("ClipRecord", id: item.id) {
+                    try requireWritable(object)
+                    removed.append(contentsOf: try managedFileIDs(for: [item]))
+                    context.delete(object)
+                }
+            case .removeFromHistory:
+                var copy = item
+                copy.isInHistory = false
+                try writeClip(copy, entity: "ClipRecord")
+            }
+        }
+        return removed
     }
     public func archive() throws -> Data { try LibraryArchive(items: items.map { try materialized($0) }, pinboards: pinboards, settings: settings).encode() }
     public func importArchive(_ data: Data) throws {

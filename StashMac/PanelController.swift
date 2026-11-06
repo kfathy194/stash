@@ -27,7 +27,7 @@ final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; over
         updateMenu()
     }
     func updateMenu() {
-        if !model.settings.showMenuBarIcon { if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }; statusItem = nil; return }
+        if !model.settings.showMenuBarIcon && !model.requiresMenuBarAccess { if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }; statusItem = nil; return }
         if statusItem == nil { statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength) }
         let icon = model.settings.isPaused() ? NSImage(systemSymbolName:"pause.rectangle",accessibilityDescription:"Stash paused") : NSImage(named:"StashStatus")
         icon?.isTemplate = true; icon?.size = NSSize(width:18,height:18); statusItem?.button?.image = icon
@@ -83,10 +83,19 @@ final class StashPanel: NSPanel { override var canBecomeKey: Bool { true }; over
         if event.keyCode == model.settings.previousBoardShortcut.keyCode && carbonModifiers(flags) == model.settings.previousBoardShortcut.modifiers { model.switchBoard(-1); return nil }
         let quick: Bool = model.settings.quickPasteModifier == "option" ? flags.contains(.option) : model.settings.quickPasteModifier == "control" ? flags.contains(.control) : command
         if quick, let number = Int(event.charactersIgnoringModifiers ?? ""), number >= 1, number <= min(9, model.visible.count) { model.paste.paste([model.visible[number - 1]], plain: plainModifier(flags)); return nil }
+        if model.settings.stackShortcutDisabled != true,
+           event.keyCode == model.settings.stackShortcut.keyCode,
+           carbonModifiers(flags) == model.settings.stackShortcut.modifiers {
+            model.toggleStack()
+            return nil
+        }
         if command {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "a": model.selection = Set(model.visible.map(\.id))
-            case "c": if shift { model.toggleStack() } else { _ = model.paste.copy(model.selected); model.message("Copied") }
+            case "c":
+                if shift { return event }
+                _ = model.paste.copy(model.selected)
+                model.message("Copied")
             case "f": if model.searchFocused { model.showFilters.toggle() }; model.searchFocused = true
             case "g": model.revealSelected()
             case "o": model.openSelected()

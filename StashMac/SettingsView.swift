@@ -1,4 +1,5 @@
 import SwiftUI
+import Carbon
 import AppKit
 import ServiceManagement
 import StashCore
@@ -6,7 +7,6 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Bindable var model: AppModel
-    @State private var ignoredApp = ""
     @State private var restartRequired = false
     @State private var importingPasteBar = false
     @State private var commerce = Commerce()
@@ -20,7 +20,6 @@ struct SettingsView: View {
             }.padding(20).frame(width: 160).background(.quaternary.opacity(0.3))
             ScrollView { VStack(alignment: .leading, spacing: 20) {
                 Text(model.settingsSection).font(.title.bold())
-                if !model.settings.onboardingComplete { onboarding }
                 switch model.settingsSection {
                 case "General": general
                 case "Shortcuts": shortcuts
@@ -35,21 +34,25 @@ struct SettingsView: View {
         }.frame(minWidth: 750, minHeight: 540).tint(StashBrand.accent)
     }
     private func binding<T>(_ keyPath: WritableKeyPath<LibrarySettings,T>) -> Binding<T> { Binding(get: { model.settings[keyPath: keyPath] }, set: { value in model.saveSettings { $0[keyPath: keyPath] = value } }) }
-    private var onboarding: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Your clipboard, with a little more room.").font(.headline)
-                Text("Open Stash with ⇧⌘V or the menu bar. Choose how long to keep your history below. Accessibility lets Stash paste into your previous app; without it, items are copied for you.").foregroundStyle(.secondary)
-                HStack { Button("Allow Direct Pasting") { model.paste.requestAccessibility() }; Button("Start using Stash") { model.saveSettings { $0.onboardingComplete = true }; model.settingsWindow?.close(); model.panel?.show() }.buttonStyle(.borderedProminent) }
-            }.padding(8)
-        }
-    }
     private var general: some View {
         VStack(alignment: .leading, spacing: 18) {
             Toggle("Launch at login", isOn: Binding(get: { SMAppService.mainApp.status == .enabled }, set: { enabled in model.perform { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } }))
             Toggle("Run in the background when windows close", isOn: binding(\.runInBackground))
-            Toggle("Show menu bar icon", isOn: Binding(get: { model.settings.showMenuBarIcon }, set: { value in model.saveSettings { $0.showMenuBarIcon = value }; if !value { model.message("Use your shortcut to open Stash.") } }))
+            Toggle("Show menu bar icon", isOn: Binding(
+                get: { model.settings.showMenuBarIcon || model.requiresMenuBarAccess },
+                set: { value in
+                    guard !model.requiresMenuBarAccess else { return }
+                    model.saveSettings { $0.showMenuBarIcon = value }
+                    if !value { model.message("Use your shortcut to open Stash.") }
+                }
+            ))
+            .disabled(model.requiresMenuBarAccess)
+            if model.requiresMenuBarAccess {
+                Text("Stash stays in the menu bar when a shortcut to open Stash or start Paste Stack is unavailable.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             HistoryRetentionSettings(store: model.store, saveSettings: model.saveSettings, reportError: model.message)
+            if let openSetupWizard = model.openSetupWizard { Button("Setup Wizard…", action: openSetupWizard) }
             Divider(); HStack { Button("Export Library…", action: exportLibrary); Button("Import Library…", action: importLibrary) }
             Button(importingPasteBar ? "Importing PasteBar…" : "Migrate from PasteBar…", action: migrateFromPasteBar).disabled(importingPasteBar)
             Text("Choose a PasteBar backup ZIP. History starts from today; saved clips keep their dates and are organized on pinboards. Existing Stash items and preferences are preserved.").font(.caption).foregroundStyle(.secondary)
@@ -60,26 +63,51 @@ struct SettingsView: View {
     private var shortcuts: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Click a shortcut and press a new key combination.").foregroundStyle(.secondary)
-            ShortcutRecorder(title: "Show / hide", value: binding(\.panelShortcut))
-            ShortcutRecorder(title: "Paste Stack", value: binding(\.stackShortcut))
+            globalShortcut(.panel, key: \.panelShortcut, disabled: \.panelShortcutDisabled)
+            globalShortcut(.stack, key: \.stackShortcut, disabled: \.stackShortcutDisabled)
             ShortcutRecorder(title: "Next pinboard", value: binding(\.nextBoardShortcut))
             ShortcutRecorder(title: "Previous pinboard", value: binding(\.previousBoardShortcut))
             Picker("Quick Paste modifier", selection: binding(\.quickPasteModifier)) { Text("⌘ Command").tag("command"); Text("⌥ Option").tag("option"); Text("⌃ Control").tag("control") }
             Picker("Plain text modifier", selection: binding(\.plainTextModifier)) { Text("⇧ Shift").tag("shift"); Text("⌥ Option").tag("option"); Text("⌃ Control").tag("control") }
-            Button("Reset shortcuts") { let defaults = LibrarySettings(); model.saveSettings { $0.panelShortcut = defaults.panelShortcut; $0.stackShortcut = defaults.stackShortcut; $0.nextBoardShortcut = defaults.nextBoardShortcut; $0.previousBoardShortcut = defaults.previousBoardShortcut; $0.quickPasteModifier = defaults.quickPasteModifier; $0.plainTextModifier = defaults.plainTextModifier } }
+            Button("Reset shortcuts") { let defaults = LibrarySettings(); model.saveSettings { $0.panelShortcut = defaults.panelShortcut; $0.stackShortcut = defaults.stackShortcut; $0.panelShortcutDisabled = nil; $0.stackShortcutDisabled = nil; $0.nextBoardShortcut = defaults.nextBoardShortcut; $0.previousBoardShortcut = defaults.previousBoardShortcut; $0.quickPasteModifier = defaults.quickPasteModifier; $0.plainTextModifier = defaults.plainTextModifier } }
             Text("Arrows navigate · ⇧Arrows extend selection · ⌘A selects all · Return pastes · Space previews · ⌘O opens · ⌘R renames · ⌘E edits · ⌘N creates text · Delete removes · ⌘Z undoes deletion or pinning · ⌘F searches · Tab switches search/results · ⌘G shows the item's location · ⌘T pauses capture.").font(.caption).foregroundStyle(.secondary)
         }
     }
+    private func globalShortcut(
+        _ slot: DailyUseShortcut,
+        key: WritableKeyPath<LibrarySettings, KeyBinding>,
+        disabled: WritableKeyPath<LibrarySettings, Bool?>
+    ) -> some View {
+        HStack {
+            ShortcutRecorder(title: slot.name, value: Binding<KeyBinding?>(
+                get: { model.settings[keyPath: disabled] == true ? nil : model.settings[keyPath: key] },
+                set: { value in
+                    model.saveSettings {
+                        if let value { $0[keyPath: key] = value }
+                        $0[keyPath: disabled] = value == nil ? true : nil
+                    }
+                }
+            ))
+            if model.settings[keyPath: disabled] != true {
+                Button("Disable " + slot.name + " shortcut") {
+                    model.saveSettings { $0[keyPath: disabled] = true }
+                }
+                if model.hotkeys?.isRegistered(slot) == false {
+                    Text("Unavailable").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private var privacy: some View {
         VStack(alignment: .leading, spacing: 15) {
             Toggle("Ignore confidential clipboard content", isOn: binding(\.ignoreConfidential))
             Toggle("Ignore transient and auto-generated content", isOn: binding(\.ignoreTransient))
-            Text("Ignore Applications").font(.headline)
-            Text("Excluding an app blocks new copies. Existing items are kept.").font(.caption).foregroundStyle(.secondary)
-            ForEach(model.settings.ignoredApplications, id: \.self) { id in HStack { Text(NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)?.deletingPathExtension().lastPathComponent ?? id).lineLimit(1); Spacer(); Button { model.saveSettings { $0.ignoredApplications.removeAll { $0 == id } } } label: { Image(systemName: "minus.circle") }.buttonStyle(.plain) } }
-            Button("Add Application…") { let panel = NSOpenPanel(); panel.directoryURL = URL(fileURLWithPath: "/Applications"); panel.allowedContentTypes = [.application]; if panel.runModal() == .OK, let url = panel.url, let id = Bundle(url: url)?.bundleIdentifier { model.saveSettings { if !$0.ignoredApplications.contains(id) { $0.ignoredApplications.append(id) } } } }
-            HStack { TextField("Bundle ID", text: $ignoredApp); Button("Add") { let id = ignoredApp.trimmingCharacters(in: .whitespacesAndNewlines); if !id.isEmpty { model.saveSettings { if !$0.ignoredApplications.contains(id) { $0.ignoredApplications.append(id) } }; ignoredApp = "" } } }
-            Divider(); Button(model.paste.hasAccessibility ? "Direct pasting is allowed" : "Allow Accessibility for direct pasting") { model.paste.requestAccessibility() }
+            ExcludedApplicationsSettings(applications: binding(\.ignoredApplications))
+            Divider()
+            Button(model.paste?.hasAccessibility == true ? "Direct pasting is allowed" : "Allow Accessibility for direct pasting") {
+                model.paste?.requestAccessibility()
+            }
             Text("Stash has no analytics or custom server. Link previews contact the copied website. Clipboard data stays on your devices and, if enabled, in your private iCloud account.").font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -137,23 +165,141 @@ struct SettingsView: View {
 
 }
 
+struct ExcludedApplicationsSettings: View {
+    @Binding var applications: [String]
+    @State private var ignoredApp = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Ignore Applications").font(.headline)
+            Text("Excluding an app blocks new copies. Existing items are kept.").font(.caption).foregroundStyle(.secondary)
+            ForEach(applications, id: \.self) { id in
+                let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)?.deletingPathExtension().lastPathComponent ?? id
+                HStack {
+                    Text(name).lineLimit(1)
+                    Spacer()
+                    Button { applications.removeAll { $0 == id } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Stop excluding \(name)")
+                }
+            }
+            Button("Add Application…", action: chooseApplication)
+            HStack {
+                TextField("Bundle ID", text: $ignoredApp)
+                Button("Add") {
+                    add(ignoredApp.trimmingCharacters(in: .whitespacesAndNewlines))
+                    ignoredApp = ""
+                }
+            }
+        }
+    }
+
+    private func chooseApplication() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        if panel.runModal() == .OK, let url = panel.url, let id = Bundle(url: url)?.bundleIdentifier { add(id) }
+    }
+
+    private func add(_ id: String) {
+        guard !id.isEmpty, !applications.contains(id) else { return }
+        applications.append(id)
+    }
+}
+
 struct ShortcutRecorder: NSViewRepresentable {
     let title: String
-    @Binding var value: KeyBinding
-    func makeNSView(context: Context) -> ShortcutButton { let button = ShortcutButton(); button.onChange = { value = $0 }; return button }
-    func updateNSView(_ button: ShortcutButton, context: Context) { button.onChange = { value = $0 }; button.title = title + "    " + button.label(for: value) }
+    @Binding var value: KeyBinding?
+
+    init(title: String, value: Binding<KeyBinding?>) {
+        self.title = title
+        self._value = value
+    }
+
+    init(title: String, value: Binding<KeyBinding>) {
+        self.init(title: title, value: Binding<KeyBinding?>(
+            get: { value.wrappedValue },
+            set: { if let binding = $0 { value.wrappedValue = binding } }
+        ))
+    }
+
+    func makeNSView(context: Context) -> ShortcutButton { ShortcutButton() }
+
+    func updateNSView(_ button: ShortcutButton, context: Context) {
+        button.onChange = { value = $0 }
+        button.shortcutTitle = title + "    " + (value.map(shortcutLabel) ?? "No shortcut")
+        button.setAccessibilityLabel(button.shortcutTitle)
+    }
 }
+
+func shortcutLabel(_ value: KeyBinding) -> String {
+    let flags = (value.modifiers & 4096 != 0 ? "⌃" : "") + (value.modifiers & 2048 != 0 ? "⌥" : "")
+        + (value.modifiers & 512 != 0 ? "⇧" : "") + (value.modifiers & 256 != 0 ? "⌘" : "")
+    let special: [UInt32: String] = [
+        36: "Return", 48: "Tab", 49: "Space", 51: "Delete", 123: "←", 124: "→", 125: "↓", 126: "↑"
+    ]
+    return flags + (special[value.keyCode] ?? keyboardLayoutLabel(value.keyCode) ?? "Key \(value.keyCode)")
+}
+
+private func keyboardLayoutLabel(_ code: UInt32) -> String? {
+    guard let keyCode = UInt16(exactly: code),
+          let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+          let property = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
+    let data = Unmanaged<CFData>.fromOpaque(property).takeUnretainedValue()
+    guard let bytes = CFDataGetBytePtr(data) else { return nil }
+    var deadKeyState: UInt32 = 0
+    var length = 0
+    var characters = [UniChar](repeating: 0, count: 8)
+    let status = withExtendedLifetime(data) {
+        bytes.withMemoryRebound(to: UCKeyboardLayout.self, capacity: 1) { layout in
+            UCKeyTranslate(layout, keyCode, UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
+                           OptionBits(kUCKeyTranslateNoDeadKeysMask), &deadKeyState, characters.count, &length, &characters)
+        }
+    }
+    guard status == noErr, length > 0 else { return nil }
+    let result = String(utf16CodeUnits: characters, count: length)
+    guard result.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else { return nil }
+    return result.uppercased()
+}
+
 final class ShortcutButton: NSButton {
     var onChange: ((KeyBinding) -> Void)?
-    override var acceptsFirstResponder: Bool { true }
-    override init(frame: NSRect) { super.init(frame: frame); target = self; action = #selector(begin); bezelStyle = .rounded }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    @objc func begin() { window?.makeFirstResponder(self); title = "Press a shortcut… (Esc to cancel)" }
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { window?.makeFirstResponder(nil); return }
-        let flags = event.modifierFlags; guard !flags.intersection([.command,.option,.control]).isEmpty else { return }
-        let modifiers: UInt32 = (flags.contains(.command) ? 256 : 0) | (flags.contains(.shift) ? 512 : 0) | (flags.contains(.option) ? 2048 : 0) | (flags.contains(.control) ? 4096 : 0)
-        onChange?(KeyBinding(keyCode: UInt32(event.keyCode), modifiers: modifiers)); window?.makeFirstResponder(nil)
+    var shortcutTitle = "" {
+        didSet { if !recording { title = shortcutTitle } }
     }
-    func label(for value: KeyBinding) -> String { let flags = (value.modifiers & 4096 != 0 ? "⌃" : "") + (value.modifiers & 2048 != 0 ? "⌥" : "") + (value.modifiers & 512 != 0 ? "⇧" : "") + (value.modifiers & 256 != 0 ? "⌘" : ""); let keys: [UInt32:String] = [9:"V",8:"C",123:"←",124:"→",49:"Space",36:"Return"]; return flags + (keys[value.keyCode] ?? "Key \(value.keyCode)") }
+    private var recording = false
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        target = self
+        action = #selector(begin)
+        bezelStyle = .rounded
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    @objc func begin() {
+        window?.makeFirstResponder(self)
+        recording = true
+        title = "Press a shortcut… (Esc to cancel)"
+    }
+
+    override func resignFirstResponder() -> Bool {
+        recording = false
+        title = shortcutTitle
+        return super.resignFirstResponder()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard recording else { super.keyDown(with: event); return }
+        if event.keyCode == 53 { window?.makeFirstResponder(nil); return }
+        let flags = event.modifierFlags
+        guard !flags.intersection([.command, .option, .control]).isEmpty else { return }
+        let modifiers: UInt32 = (flags.contains(.command) ? 256 : 0) | (flags.contains(.shift) ? 512 : 0)
+            | (flags.contains(.option) ? 2048 : 0) | (flags.contains(.control) ? 4096 : 0)
+        onChange?(KeyBinding(keyCode: UInt32(event.keyCode), modifiers: modifiers))
+        window?.makeFirstResponder(nil)
+    }
 }

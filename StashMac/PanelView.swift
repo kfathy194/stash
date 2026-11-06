@@ -6,6 +6,7 @@ struct PanelView: View {
     @Bindable var model: AppModel
     @FocusState private var searchFocus: Bool
     @State private var draggedBoard: UUID?
+    @State private var showsSetupWalkthrough = false
     var body: some View {
         GeometryReader { geometry in
             let compact = geometry.size.height < 285
@@ -13,6 +14,7 @@ struct PanelView: View {
                 Capsule().fill(.secondary.opacity(0.4)).frame(width: 40, height: 4).padding(.top, 7).padding(.bottom, 8)
                     .frame(maxWidth: .infinity).contentShape(Rectangle()).gesture(DragGesture().onChanged { model.panel?.resize(translation: -$0.translation.height, ended: false) }.onEnded { model.panel?.resize(translation: -$0.translation.height, ended: true) })
                 toolbar.padding(.horizontal, 24).padding(.bottom, 12)
+                if model.showsSetupGuide { setupGuide.padding(.horizontal, 24).padding(.bottom, 10) }
                 suggestionBanner.padding(.horizontal, 24).padding(.bottom, 10)
                 if model.searchFocused || !model.query.isEmpty || model.showFilters { searchBar.padding(.horizontal, 24).padding(.bottom, 10) }
                 if model.showFilters { filters.padding(.horizontal, 24).padding(.bottom, 10) }
@@ -86,6 +88,37 @@ struct PanelView: View {
             Button(action: { model.showSettings() }) { Image(systemName: "gearshape") }.help("Settings · ⌘,")
         }.buttonStyle(.borderless).font(.system(size: 14))
     }
+    private var setupGuide: some View {
+        HStack(spacing: 10) {
+            Label(model.openStashGuidance, systemImage: "checkmark.circle")
+                .foregroundStyle(.primary)
+            Spacer(minLength: 4)
+            Button("Try a copy") { showsSetupWalkthrough = true }
+                .popover(isPresented: $showsSetupWalkthrough) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Try copying and pasting").font(.headline).accessibilityAddTraits(.isHeader)
+                        Text("1. Copy some text in another app.")
+                        Text("2. Open Stash and select the new clip in Clipboard.")
+                        Text("3. Press Return. If Stash copies the clip for manual paste, return to the other app and press Command–V.")
+                        Button("Done") { showsSetupWalkthrough = false }
+                            .keyboardShortcut(.cancelAction)
+                    }
+                    .padding(16).frame(width: 310)
+                }
+            Menu("Setup settings") {
+                Button("iCloud Sync and Sharing") { model.showSettings(section: "Sync") }
+                Button("Suggestions and MCP") { model.showSettings(section: "Intelligence") }
+                Button("Import a Library") { model.showSettings(section: "General") }
+            }
+            Button { model.showsSetupGuide = false } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss setup guide")
+        }
+        .font(.callout)
+        .padding(8)
+        .background(StashBrand.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     @ViewBuilder private var suggestionBanner: some View {
         if let notice = model.suggestionNotice {
             HStack(spacing: 8) {

@@ -10,6 +10,16 @@
 | Device consent | Local opt-in for iCloud, MCP or Suggestions; never enabled by cloud preferences. |
 | Acceptance gate | A required real-world validation, distinct from successful compilation or unit tests. |
 
+## Setup
+
+**Onboarding wizard**:
+A guided introduction that helps a user choose how Stash works on their Mac.
+_Avoid_: Installer, account registration
+
+**Onboarding draft**:
+The proposed configuration a user is reviewing in the onboarding wizard before applying it.
+_Avoid_: Active settings, granted permissions
+
 ## Authored content
 
 **Item format**:

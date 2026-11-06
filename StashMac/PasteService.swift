@@ -48,8 +48,8 @@ import StashCore
         }
         activationObserver = PasteActivationObservation(center: native.activationCenter, token: token)
     }
-    var hasAccessibility: Bool { AXIsProcessTrusted() }
-    func requestAccessibility() { _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary) }
+    var hasAccessibility: Bool { DirectPastePermission.system.status() == .granted }
+    func requestAccessibility() { DirectPastePermission.system.request() }
     /// Status-menu tracking begins before showing the panel. A Stash-owned current
     /// workflow has no external destination; never reuse an older app's field.
     func captureMenuDestination() { menuDestination = frontmostDestination() }
