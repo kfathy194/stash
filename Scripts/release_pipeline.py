@@ -190,7 +190,7 @@ def main():
         plan=json.loads(Path('release-plan.json').read_text())
         if plan['commit'] != sha: raise ValueError('Release plan/source mismatch')
         assets=package_assets(args.directory,plan)
-        notes=f"PR #{event['pull_request']['number']}\nCommit: {sha}\nVersion: {plan['version']} (build {plan['build_number']})\n\nCore tests, universal macOS Release and iOS simulator builds passed.\nDevelopment prerelease: ad-hoc signed and unnotarized. Device, cloud, permission, MCP and commerce acceptance remain open."
+        notes=f"PR #{event['pull_request']['number']}\nCommit: {sha}\nVersion: {plan['version']} (build {plan['build_number']})\n\nCore tests, universal macOS Release and iOS simulator builds passed.\nDevelopment prerelease: ad-hoc signed and unnotarized; iCloud sync/sharing unavailable. Device, cloud, permission, MCP and commerce acceptance remain open."
         publish(GitHub(os.environ['GITHUB_REPOSITORY'],os.environ['GH_TOKEN']),plan,assets,notes)
 
 if __name__ == '__main__': main()

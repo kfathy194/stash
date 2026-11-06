@@ -59,7 +59,7 @@ class ExtractedBundleTests(unittest.TestCase):
             subprocess.run(['clang','-arch',arch,str(source),'-o',str(cls.root/arch)],check=True,capture_output=True)
         subprocess.run(['lipo','-create',str(cls.root/'arm64'),str(cls.root/'x86_64'),'-output',str(cls.app/'Contents/MacOS/Stash')],check=True)
         shutil.copy2(cls.app/'Contents/MacOS/Stash',cls.app/'Contents/Helpers/StashMCP')
-        (cls.app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.kfathy.stash','CFBundleExecutable':'Stash','CFBundlePackageType':'APPL','CFBundleVersion':'42','CFBundleShortVersionString':'0.1.0','LSMinimumSystemVersion':'14.0'}))
+        (cls.app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.kfathy.stash','CFBundleExecutable':'Stash','CFBundlePackageType':'APPL','CFBundleVersion':'42','CFBundleShortVersionString':'0.1.0','LSMinimumSystemVersion':'14.0','StashCloudKitEnabled':False,'CKSharingSupported':False}))
         subprocess.run(['codesign','--force','--sign','-',str(cls.app/'Contents/Helpers/StashMCP')],check=True,capture_output=True)
         subprocess.run(['codesign','--force','--sign','-',str(cls.app)],check=True,capture_output=True)
         cls.metadata={'version':'0.1.0','build_number':42}
@@ -75,6 +75,46 @@ class ExtractedBundleTests(unittest.TestCase):
 
     def test_signed_universal_extracted_app_passes(self):
         self.package.verify_app(self.copy,self.metadata)
+
+    def test_packaged_fixture_launches_without_provisioning_profile(self):
+        import json
+        import plistlib
+        import shutil
+        from unittest.mock import patch
+        output = Path(self.temp.name)/'output'
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+        real_run = self.package.run
+        def build_or_run(*args, **kwargs):
+            if str(args[0]) != 'bash':
+                return real_run(*args, **kwargs)
+            app = Path(kwargs['env']['STASH_CHECK_ROOT'])/'mac/Build/Products/Release/Stash.app'
+            shutil.copytree(self.app, app)
+            info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+            info.update(StashCloudKitEnabled=True, CKSharingSupported=True)
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+        argv = ['package_release.py', '--version', '0.1.0', '--build-number', '42',
+                '--commit', commit, '--output', str(output)]
+        with patch.object(sys, 'argv', argv), patch.object(self.package, 'run', build_or_run):
+            self.package.main()
+        extracted = Path(self.temp.name)/'extracted'
+        subprocess.run(['ditto', '-x', '-k', str(output/'Stash-macOS.zip'), str(extracted)], check=True)
+        app = extracted/'Stash.app'
+        result = subprocess.run([str(app/'Contents/MacOS/Stash')], capture_output=True)
+        self.assertEqual(result.returncode, 0, 'macOS must permit this ad-hoc executable to start')
+        info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+        self.assertIs(info['StashCloudKitEnabled'], False)
+        self.assertIs(info['CKSharingSupported'], False)
+        self.assertEqual(json.loads((output/'metadata.json').read_text())['commit'], commit)
+
+    def test_restricted_icloud_claims_fail_even_with_valid_signature(self):
+        import plistlib
+        entitlements = Path(self.temp.name)/'restricted.plist'
+        entitlements.write_bytes(plistlib.dumps({'com.apple.developer.icloud-services':['CloudKit']}))
+        subprocess.run(['codesign', '--force', '--sign', '-', '--options', 'runtime',
+                        '--entitlements', str(entitlements), str(self.copy)], check=True, capture_output=True)
+        subprocess.run(['codesign', '--verify', '--deep', '--strict', str(self.copy)], check=True, capture_output=True)
+        with self.assertRaisesRegex(ValueError, 'restricted'):
+            self.package.verify_app(self.copy, self.metadata)
 
     def test_readonly_build_cache_cleanup_preserves_package_result(self):
         # Xcode can mount Metal's read-only toolchain beneath the isolated home.

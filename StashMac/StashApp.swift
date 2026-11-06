@@ -14,7 +14,7 @@ import CloudKit
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         do {
-            let sync = LibraryStore.syncRequested
+            let sync = AppModel.cloudKitAvailable && LibraryStore.syncRequested
             let demo = (ProcessInfo.processInfo.arguments.contains("--demo") || Bundle.main.object(forInfoDictionaryKey:"StashDemoMode") as? Bool == true)
             let store = try LibraryStore(inMemory: demo, syncEnabled: demo ? false : sync)
             if demo { try seedDemo(store) }
@@ -25,7 +25,7 @@ import CloudKit
         } catch { let alert = NSAlert(); alert.messageText = "Stash couldn't open your library"; alert.informativeText = error.localizedDescription + "\nYour existing data has been preserved."; alert.runModal(); NSApp.terminate(nil) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !(model?.settings.runInBackground ?? true) }
-    func application(_ application: NSApplication, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) { guard let model else { return }; Task { do { try await model.store.acceptShare(metadata) } catch { model.message(error.localizedDescription) } } }
+    func application(_ application: NSApplication, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) { guard let model else { return }; guard AppModel.cloudKitAvailable else { model.message("iCloud sharing is unavailable in this development build."); return }; Task { do { try await model.store.acceptShare(metadata) } catch { model.message(error.localizedDescription) } } }
     private func seedDemo(_ store: LibraryStore) throws {
         let board = try store.createBoard(name:"Studio", colorHex:"7987EB")
         _ = try store.createBoard(name:"Everyday", colorHex:"F0A154")

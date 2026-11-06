@@ -5,6 +5,7 @@ import Vision
 import LinkPresentation
 
 @MainActor @Observable final class AppModel {
+    static var cloudKitAvailable: Bool { Bundle.main.object(forInfoDictionaryKey: "StashCloudKitEnabled") as? Bool != false }
     let store: LibraryStore
     var query = ""
     var filter = SearchFilter()
@@ -105,6 +106,7 @@ import LinkPresentation
         Task { defer { isRanking = false }; do { suggestions = try await intelligence.rank(items: visible, app: app, isPanelOpen: { self.panel?.isVisible == true }); selectFirstIfNeeded() } catch { message(error.localizedDescription) } }
     }
     func shareBoard(_ id: UUID) {
+        guard Self.cloudKitAvailable else { message("iCloud sharing is unavailable in this development build."); return }
         Task { do { let share = try await store.shareBoard(id); let service = NSSharingService(named: .cloudSharing); service?.perform(withItems: [share, CKContainer(identifier: LibraryStore.cloudContainer)]) } catch { message(error.localizedDescription) } }
     }
 }

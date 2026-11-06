@@ -84,10 +84,14 @@ struct SettingsView: View {
     }
     private var sync: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Toggle("Sync with my iCloud account", isOn: Binding(get: { model.settings.syncEnabled }, set: { value in model.saveSettings { $0.syncEnabled = value }; restartRequired = true }))
-            Label(model.store.syncStatus, systemImage: "icloud")
-            Text("Use the same Apple Account on your Mac, iPhone and iPad. Stash uses private iCloud storage. A shared pinboard includes only items pinned to that board.").foregroundStyle(.secondary)
-            if restartRequired { Text("Quit and reopen Stash to apply the sync setting.").foregroundStyle(.orange) }
+            if AppModel.cloudKitAvailable {
+                Toggle("Sync with my iCloud account", isOn: Binding(get: { model.settings.syncEnabled }, set: { value in model.saveSettings { $0.syncEnabled = value }; restartRequired = true }))
+                Label(model.store.syncStatus, systemImage: "icloud")
+                Text("Use the same Apple Account on your Mac, iPhone and iPad. Stash uses private iCloud storage. A shared pinboard includes only items pinned to that board.").foregroundStyle(.secondary)
+                if restartRequired { Text("Quit and reopen Stash to apply the sync setting.").foregroundStyle(.orange) }
+            } else {
+                Text("iCloud sync and sharing are unavailable in this development build. Your library stays on this Mac.").foregroundStyle(.secondary)
+            }
             Button("Refresh local view") { model.perform { try model.store.reload() } }
         }
     }

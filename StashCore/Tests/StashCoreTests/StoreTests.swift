@@ -2,6 +2,35 @@ import XCTest
 @testable import StashCore
 
 final class StoreTests: XCTestCase {
+    @MainActor func testLocalModePreservesSyncPreferenceAndAllowsLocalWrites() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let boardID: UUID
+        let item = ClipItem(kind: .text, text: "local fixture")
+        do {
+            let first = try LibraryStore(directory: folder)
+            boardID = try first.createBoard(name: "Local").id
+            try first.add(item)
+            var preferences = first.settings
+            preferences.syncEnabled = true
+            try first.updateSettings(preferences)
+        }
+        let store = try LibraryStore(directory: folder, syncEnabled: false)
+        XCTAssertTrue(store.settings.syncEnabled, "Preserve the owner's preference for a capable build")
+        XCTAssertEqual(store.syncStatus, "On this device")
+        XCTAssertTrue(store.boardIsWritable(boardID))
+        try store.pin([item.id], to: boardID)
+        var updated = try XCTUnwrap(store.items.first)
+        updated.text = "edited locally"
+        try store.update(updated)
+        XCTAssertEqual(store.items.first?.text, "edited locally")
+        XCTAssertEqual(store.items.first?.pinboardID, boardID)
+        XCTAssertTrue(store.settings.syncEnabled)
+        let reopened = try LibraryStore(directory: folder, syncEnabled: false)
+        XCTAssertTrue(reopened.settings.syncEnabled)
+        XCTAssertEqual(reopened.items.first?.text, "edited locally")
+    }
+
     @MainActor func testPinMovesErasePreservesAndBoardDeletionRemoves() throws {
         let store = try LibraryStore(inMemory: true)
         let first = try store.createBoard(name: "Work"), second = try store.createBoard(name: "Personal")

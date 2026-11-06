@@ -17,4 +17,8 @@ for target in ['StashMac','StashIOS','StashShare','StashKeyboard']:
     # Direct-distribution Mac needs accessibility event injection and is intentionally not sandboxed.
     if target=='StashMac':ent.update({'com.apple.security.network.client':True,'com.apple.security.network.server':True,'com.apple.security.files.user-selected.read-write':True})
     (ROOT/'Config'/f'{target}.entitlements').write_bytes(plistlib.dumps(ent))
+    if target=='StashMac':
+        # Ad-hoc downloads cannot claim provisioned iCloud capabilities.
+        development={key:value for key,value in ent.items() if key.startswith('com.apple.security.')}
+        (ROOT/'Config/StashMacDevelopment.entitlements').write_bytes(plistlib.dumps(development))
 print('Generated Info.plists and entitlements.')

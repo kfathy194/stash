@@ -24,7 +24,8 @@ def verify_app(app, metadata):
     expected = {'CFBundleIdentifier':'com.kfathy.stash',
                 'CFBundleShortVersionString':metadata['version'],
                 'CFBundleVersion':str(metadata['build_number']),
-                'LSMinimumSystemVersion':'14.0'}
+                'LSMinimumSystemVersion':'14.0',
+                'StashCloudKitEnabled':False, 'CKSharingSupported':False}
     for key, value in expected.items():
         if info.get(key) != value:
             raise ValueError(f'packaged {key} differs from release metadata')
@@ -39,6 +40,13 @@ def verify_app(app, metadata):
             raise ValueError(f'{executable.name} is not universal')
     for executable in [app/'Contents/MacOS/Stash', app/'Contents/Helpers/StashMCP']:
         run('codesign', '--verify', '--strict', executable)
+        raw = run('codesign', '--display', '--entitlements', '-', '--xml', executable,
+                  capture_output=True).stdout
+        entitlements = plistlib.loads(raw) if raw.strip() else {}
+        if any(key.startswith('com.apple.developer.') or
+               key in {'keychain-access-groups', 'com.apple.application-identifier'}
+               for key in entitlements):
+            raise ValueError('ad-hoc development app claims restricted capabilities')
     run('codesign', '--verify', '--deep', '--strict', app)
 
 
@@ -65,9 +73,13 @@ def main():
                    STASH_BUILD_NUMBER=str(metadata['build_number']), STASH_CHECK_ROOT=str(build/'verify'))
         run('bash', ROOT/'Scripts/verify.sh', cwd=ROOT, env=env)
         app = build/'verify/mac/Build/Products/Release/Stash.app'
+        info_path = app/'Contents/Info.plist'
+        info = plistlib.loads(info_path.read_bytes())
+        info.update(StashCloudKitEnabled=False, CKSharingSupported=False)
+        info_path.write_bytes(plistlib.dumps(info))
         run('codesign', '--force', '--sign', '-', '--options', 'runtime', app/'Contents/Helpers/StashMCP')
         run('codesign', '--force', '--sign', '-', '--options', 'runtime',
-            '--entitlements', ROOT/'Config/StashMac.entitlements', app)
+            '--entitlements', ROOT/'Config/StashMacDevelopment.entitlements', app)
         verify_app(app, metadata)
         archive = build/'Stash-macOS.zip'
         run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, archive)
