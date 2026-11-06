@@ -5,6 +5,8 @@ import io
 import json
 import os
 import pwd
+import select
+import signal
 import stat
 import struct
 import subprocess
@@ -116,27 +118,88 @@ class PushMergeDiscoveryTests(unittest.TestCase):
         with patch.object(local_release, 'pushed_merge_commits', side_effect=AssertionError):
             self.assertEqual(local_release.prepare_push('backup', [], self.repo, self.repo / 'queue'), [])
 
-    def test_sudo_keepalive_spawn_refreshes_and_is_stopped_deterministically(self):
-        with patch.object(local_release.subprocess, 'Popen', return_value=unittest.mock.Mock()) as popen, \
-                patch.object(local_release, 'terminate_process_group') as terminate:
-            with local_release.sudo_keepalive(interval=55) as child:
-                command, kwargs = popen.call_args.args[0], popen.call_args.kwargs
+    def test_pushes_without_eligible_merges_do_not_start_privilege_helper(self):
+        records = (
+            [],
+            [f'refs/heads/feature {self.old} refs/heads/feature {self.old}'],
+            [f'refs/tags/v1 {self.old} refs/tags/v1 {local_release.ZERO_SHA}'],
+            [f'refs/heads/main {self.old} refs/heads/main {self.old}'],
+        )
+        with patch.object(local_release, 'sudo_keepalive', side_effect=AssertionError('unexpected helper')):
+            for updates in records:
+                with self.subTest(records=updates):
+                    self.assertEqual(local_release.prepare_push('origin', updates, self.repo), [])
 
-        self.assertEqual(command[0], '/bin/sh')
-        self.assertIn('sudo -n true', command[2])
-        self.assertIn('sleep 55', command[2])
-        self.assertEqual(kwargs['env'], local_release.SUDO_ENV)
-        self.assertIs(kwargs['stdin'], subprocess.DEVNULL)
-        self.assertIs(kwargs['preexec_fn'], local_release.BUILDER_PREEXEC)
-        self.assertFalse(kwargs.get('start_new_session'))
-        self.assertIs(child, popen.return_value)
-        terminate.assert_called_once_with(child, grace=1)
+    def test_sudo_keepalive_stops_after_normal_exit_and_parent_signals(self):
+        for exit_kind in ('normal', 'exception', signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(exit=exit_kind):
+                marker = self.repo / f'refresh-{exit_kind}'
+                fake_sudo = self.repo / 'fake-sudo'
+                fake_sudo.write_text(f"#!/bin/sh\nprintf . >> '{marker}'\n")
+                fake_sudo.chmod(0o700)
+                # Replace only the privilege boundary before spawning any child.
+                # No test process ever invokes real sudo or changes credentials.
+                source = f"""
+import importlib.util, os, subprocess, sys, time
+spec = importlib.util.spec_from_file_location('local_release', {str(Path(local_release.__file__))!r})
+release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release)
+spawn = subprocess.Popen
+def harmless_spawn(command, **kwargs):
+    assert any('/usr/bin/sudo' in part for part in command), command
+    command = [part.replace('/usr/bin/sudo', {str(fake_sudo)!r}) for part in command]
+    return spawn(command, **kwargs)
+release.subprocess.Popen = harmless_spawn
+try:
+    with release.sudo_keepalive(interval=0.05) as child:
+        assert os.getsid(child.pid) == os.getsid(0), 'controlling-terminal session changed'
+        assert os.getpgid(child.pid) == child.pid, 'cleanup process group missing'
+        print(child.pid, flush=True)
+        while not os.path.exists({str(marker)!r}):
+            time.sleep(0.01)
+        if {exit_kind == 'exception'!r}:
+            raise RuntimeError('fixture build failure')
+        if {isinstance(exit_kind, int)!r}:
+            time.sleep(60)
+except RuntimeError:
+    pass
+"""
+                owner = subprocess.Popen(
+                    [sys.executable, '-c', source], stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True)
+                child_pid = None
+                try:
+                    self.assertTrue(select.select([owner.stdout], [], [], 3)[0], 'owner never started')
+                    child_pid = int(owner.stdout.readline())
+                    deadline = time.monotonic() + 3
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(marker.exists(), 'fake refresh never ran')
+                    if isinstance(exit_kind, int):
+                        owner.send_signal(exit_kind)
+                    owner.wait(timeout=3)
+                    self.assertEqual(owner.returncode, -exit_kind if isinstance(exit_kind, int) else 0,
+                                     owner.stderr.read())
+                    deadline = time.monotonic() + 2
+                    while self.keepalive_is_running(child_pid) and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertFalse(self.keepalive_is_running(child_pid), 'keepalive outlived its owner')
+                    refreshes = marker.read_bytes()
+                    time.sleep(0.12)
+                    self.assertEqual(marker.read_bytes(), refreshes, 'refreshes continued after parent exit')
+                finally:
+                    if owner.poll() is None:
+                        owner.kill()
+                    owner.communicate(timeout=3)
+                    # Only signal a real child PID reported by this fixture.
+                    if child_pid and self.keepalive_is_running(child_pid):
+                        os.killpg(child_pid, signal.SIGKILL)
 
-    def test_sudo_keepalive_child_terminates_with_the_push(self):
-        with local_release.sudo_keepalive(interval=0.05) as child:
-            self.assertIsNone(child.poll())
-
-        self.assertIsNotNone(child.poll())
+    @staticmethod
+    def keepalive_is_running(pid):
+        status = subprocess.run(
+            ['/bin/ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True)
+        return status.returncode == 0 and not status.stdout.strip().startswith('Z')
 
     def test_prepare_push_keeps_sudo_alive_across_the_whole_build(self):
         record = f'refs/heads/main {self.old} refs/heads/main {self.old}'
@@ -873,7 +936,8 @@ sys.exit(1)
 
                     process.poll.side_effect = reap
                     process.wait.side_effect = reap
-                    with patch.object(local_release.os, 'killpg', side_effect=kill_group):
+                    with patch.object(local_release.os, 'killpg', side_effect=kill_group), \
+                            patch.object(local_release.os, 'kill', return_value=None):
                         if surviving_group:
                             with self.assertRaises(PermissionError):
                                 local_release.terminate_process_group(process, grace=0)

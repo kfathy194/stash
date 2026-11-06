@@ -15,7 +15,7 @@ class GitHubBoundaryTests(unittest.TestCase):
 
         def response(request, **kwargs):
             path = r.urllib.parse.urlsplit(request.full_url).path
-            self.assertTrue(path.endswith('/repos/owner/repo/'))
+            self.assertEqual(path, '/repos/owner/repo')
             return io.BytesIO(json.dumps(visibility).encode())
 
         api = r.GitHub('owner/repo', 'test-token')

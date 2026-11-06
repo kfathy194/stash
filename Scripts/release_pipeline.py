@@ -47,7 +47,7 @@ class GitHub:
 
     def request(self, method, path, data=None, raw=False):
         url = self.base + path
-        if not url.startswith((self.base + '/', 'https://uploads.github.com/repos/')):
+        if url != self.base and not url.startswith((self.base + '/', 'https://uploads.github.com/repos/')):
             raise ValueError('Invalid API target')
         content = data if raw else (json.dumps(data).encode() if data is not None else None)
         req = urllib.request.Request(url, content, method=method, headers={
@@ -90,7 +90,7 @@ class GitHub:
             raise ValueError('Staged release disappeared')
         return release
     def repository_is_private(self):
-        repository = self.request('GET', '/')
+        repository = self.request('GET', '')
         if not isinstance(repository, dict) or type(repository.get('private')) is not bool:
             raise ValueError('Cannot verify release repository visibility')
         return repository['private']

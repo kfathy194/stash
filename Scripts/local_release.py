@@ -288,22 +288,34 @@ def sudo_keepalive(interval=SUDO_KEEPALIVE_INTERVAL_SECONDS):
     single long builder step (the package build) provides exactly that gap:
     every later `sudo -n` call, including the package stream and cleanup,
     would then fail non-interactively with "a password is required". A
-    dedicated shell child refreshes the ticket with `sudo -n true`, which
+    dedicated child refreshes the ticket with `sudo -n true`, which
     never prompts and never handles credentials. The child must keep the
     controlling terminal (sudo validates the ticket against that tty) but
     runs in its own process group so it can be stopped deterministically.
+    Its stdin pipe is held only by this parent: EOF ends refreshes even if
+    the parent dies without running the context manager's cleanup.
     """
     command = [
-        '/bin/sh', '-c',
-        f'while :; do /usr/bin/sudo -n true >/dev/null 2>&1; sleep {interval}; done',
+        sys.executable, '-I', '-c', '''
+import select, subprocess, sys
+interval = float(sys.argv[1])
+while not select.select([sys.stdin], [], [], interval)[0]:
+    try:
+        subprocess.run(['/usr/bin/sudo', '-n', 'true'], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+''', str(interval),
     ]
     process = subprocess.Popen(
-        command, env=SUDO_ENV, stdin=subprocess.DEVNULL,
+        command, env=SUDO_ENV, stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         preexec_fn=BUILDER_PREEXEC)
     try:
         yield process
     finally:
+        process.stdin.close()
         terminate_process_group(process, grace=1)
 
 
@@ -1261,6 +1273,8 @@ def prepare_push(remote_name, records, repo, pending_root=None):
     if remote_name != 'origin':
         return []
     commits = pushed_merge_commits(records, repo)
+    if not commits:
+        return []
     with sudo_keepalive():
         return [prepare_commit(repo, commit, pending_root) for commit in commits]
 
